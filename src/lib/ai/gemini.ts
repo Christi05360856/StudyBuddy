@@ -2,11 +2,20 @@
 // Every AI feature (quiz, topics, tutor) uses this, so a fix here fixes all of them.
 //
 // Order of attempts:
-//  1. Google Gemini (each model in MODELS)
-//  2. On quota/429 OR if all Gemini models fail → fallback provider (Groq, OpenRouter, etc.)
+//  1. Google Gemini (each model in DEFAULT_MODELS)
+//  2. On quota/429 OR if all Gemini models fail → fallback provider (Groq, etc.)
 //
+// Models (Nov 2026):
+//   gemini-2.0-* and gemini-1.5-* are shut down.
+//   llama-3.3-70b-versatile on Groq is Enterprise-only.
+//   Free Groq models: openai/gpt-oss-20b, openai/gpt-oss-120b
 
-const DEFAULT_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
+const DEFAULT_MODELS = [
+  "gemini-2.5-flash-lite",
+  "gemini-2.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.6-flash",
+]
 
 function modelList(): string[] {
   const forced = process.env.GEMINI_MODEL?.trim()
@@ -153,8 +162,9 @@ export async function callGemini(options: {
           console.error("Gemini error:", message)
           if (isQuotaStatus(res.status, body)) {
             sawQuota = true
-            break // no point trying other Gemini models on the same key
+            break // same key — no point trying other Gemini models
           }
+          // 404 = model retired; try next model
           if (res.status === 401 || res.status === 403) break
           continue
         }
@@ -206,6 +216,7 @@ export async function callGemini(options: {
     }
   }
 
+  // Keep technical detail in logs only — callers should show a friendly message
   return { ok: false, error: errors.slice(-3).join(" | ") || "Unknown AI error" }
 }
 
