@@ -2,13 +2,17 @@
 // Every AI feature (quiz, topics, tutor) uses this, so a fix here fixes all of them.
 //
 // Order of attempts:
-//  1. Google Gemini, trying each model in MODELS until one answers.
-//  2. (Optional) a backup provider, only if you set the FALLBACK_LLM_* variables.
-//     It works with Groq, Cerebras, OpenRouter, Hugging Face router, or any
-//     service that speaks the OpenAI "chat/completions" format.
+//  1. Google Gemini (each model in MODELS)
+//  2. On quota/429 OR if all Gemini models fail → fallback provider (Groq, OpenRouter, etc.)
+//
 
-// You can force a model by adding GEMINI_MODEL in Vercel -> Environment Variables.
-const MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"]
+const DEFAULT_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"]
+
+function modelList(): string[] {
+  const forced = process.env.GEMINI_MODEL?.trim()
+  if (forced) return [forced, ...DEFAULT_MODELS.filter((m) => m !== forced)]
+  return DEFAULT_MODELS
+}
 
 export type GeminiPart =
   | { text: string }
@@ -20,18 +24,21 @@ export type GeminiResult =
 
 type ReplyPart = { text?: string; thought?: boolean }
 
-// Turns Google's long error reply into one short readable line
 function shortError(body: string, status: number): string {
   try {
     const message = JSON.parse(body)?.error?.message
     if (message) return `${String(message).slice(0, 220)} (code ${status})`
   } catch {
-    // not JSON, fall through
+    // not JSON
   }
   return `${body.slice(0, 220)} (code ${status})`
 }
 
-// ---------- Backup provider (OpenAI-compatible) ----------
+function isQuotaStatus(status: number, body: string): boolean {
+  if (status === 429) return true
+  const m = body.toLowerCase()
+  return m.includes("quota") || m.includes("resource_exhausted") || m.includes("rate limit")
+}
 
 async function callFallback(options: {
   parts: GeminiPart[]
@@ -41,12 +48,15 @@ async function callFallback(options: {
 }): Promise<GeminiResult | null> {
   const apiKey = process.env.FALLBACK_LLM_API_KEY
   const model = process.env.FALLBACK_LLM_MODEL?.trim()
-  if (!apiKey || !model) return null // not configured
+  if (!apiKey || !model) return null
 
-  // The backup can only read text, not PDFs or photos
+  // Backup providers only support text, not images/PDFs
   if (options.parts.some((p) => "inline_data" in p)) return null
 
-  const baseUrl = (process.env.FALLBACK_LLM_BASE_URL || "https://api.groq.com/openai/v1").replace(/\/$/, "")
+  const baseUrl = (process.env.FALLBACK_LLM_BASE_URL || "https://api.groq.com/openai/v1").replace(
+    /\/$/,
+    ""
+  )
   const prompt = options.parts.map((p) => ("text" in p ? p.text : "")).join("\n\n")
 
   const send = async (withJsonMode: boolean) => {
@@ -55,7 +65,10 @@ async function callFallback(options: {
     try {
       return await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${apiKey}`,
+        },
         body: JSON.stringify({
           model,
           messages: [{ role: "user", content: prompt }],
@@ -71,59 +84,57 @@ async function callFallback(options: {
 
   try {
     let res = await send(Boolean(options.json))
-    // Some providers do not support JSON mode. Try once more without it.
-    if (res.status === 400 && options.json) res = await send(false)
-
+    // Some providers reject JSON mode — retry once without it
+    if (!res.ok && options.json && res.status === 400) {
+      res = await send(false)
+    }
     if (!res.ok) {
       const body = await res.text()
-      return { ok: false, error: `backup AI ${model}: ${shortError(body, res.status)}` }
+      return { ok: false, error: `fallback/${model}: ${shortError(body, res.status)}` }
     }
     const data = await res.json()
-    const text: string = data?.choices?.[0]?.message?.content ?? ""
-    if (!text.trim()) return { ok: false, error: `backup AI ${model}: empty reply` }
+    const text = data?.choices?.[0]?.message?.content
+    if (!text || typeof text !== "string") {
+      return { ok: false, error: `fallback/${model}: empty reply` }
+    }
     return { ok: true, text, model: `fallback:${model}` }
   } catch (err) {
-    return {
-      ok: false,
-      error: `backup AI ${model}: ${err instanceof Error && err.name === "AbortError" ? "took too long" : err instanceof Error ? err.message : "network error"}`,
-    }
+    const message =
+      err instanceof Error && err.name === "AbortError"
+        ? `fallback/${model}: took too long`
+        : `fallback/${model}: ${err instanceof Error ? err.message : "network error"}`
+    return { ok: false, error: message }
   }
 }
-
-// ---------- Main entry ----------
 
 export async function callGemini(options: {
   parts: GeminiPart[]
   json?: boolean
   maxOutputTokens?: number
-  /** Total time allowed for ALL attempts together (not per model) */
   timeoutMs?: number
 }): Promise<GeminiResult> {
-  const totalMs = options.timeoutMs ?? 50000
-  const deadline = Date.now() + totalMs
   const apiKey = process.env.GEMINI_API_KEY
   const errors: string[] = []
+  const deadline = Date.now() + (options.timeoutMs ?? 55000)
+  let sawQuota = false
 
-  if (!apiKey) {
-    errors.push("GEMINI_API_KEY is not set in Vercel")
-  } else {
-    const custom = process.env.GEMINI_MODEL?.trim()
-    const models = custom ? [custom, ...MODELS.filter((m) => m !== custom)] : MODELS
-
-    for (const model of models) {
-      // Keep some time for the backup provider, and never start an attempt with almost no time left
+  if (apiKey) {
+    for (const model of modelList()) {
       const remaining = deadline - Date.now()
-      if (remaining < 6000) break
+      if (remaining < 3000) break
 
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), remaining)
+      const timer = setTimeout(() => controller.abort(), Math.min(remaining, 28000))
 
       try {
         const res = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
           {
             method: "POST",
-            headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+            headers: {
+              "Content-Type": "application/json",
+              "x-goog-api-key": apiKey,
+            },
             body: JSON.stringify({
               contents: [{ role: "user", parts: options.parts }],
               generationConfig: {
@@ -140,7 +151,10 @@ export async function callGemini(options: {
           const message = `${model}: ${shortError(body, res.status)}`
           errors.push(message)
           console.error("Gemini error:", message)
-          // A bad key fails on every Gemini model, so skip the rest of them
+          if (isQuotaStatus(res.status, body)) {
+            sawQuota = true
+            break // no point trying other Gemini models on the same key
+          }
           if (res.status === 401 || res.status === 403) break
           continue
         }
@@ -154,9 +168,8 @@ export async function callGemini(options: {
           .join("")
 
         if (!text) {
-          const message = `${model}: empty reply (${candidate?.finishReason ?? "no reason given"})`
+          const message = `${model}: empty reply (${candidate?.finishReason ?? "no reason"})`
           errors.push(message)
-          console.error("Gemini error:", message)
           continue
         }
 
@@ -172,9 +185,10 @@ export async function callGemini(options: {
         clearTimeout(timer)
       }
     }
+  } else {
+    errors.push("GEMINI_API_KEY not set")
   }
 
-  // Backup provider (only if configured and the request is text-only)
   const fallback = await callFallback({
     parts: options.parts,
     json: options.json,
@@ -184,13 +198,23 @@ export async function callGemini(options: {
   if (fallback?.ok) return fallback
   if (fallback && !fallback.ok) errors.push(fallback.error)
 
+  if (sawQuota && !process.env.FALLBACK_LLM_API_KEY) {
+    return {
+      ok: false,
+      error:
+        "AI quota reached and no backup provider is configured. Add FALLBACK_LLM_API_KEY (e.g. Groq) on Vercel.",
+    }
+  }
+
   return { ok: false, error: errors.slice(-3).join(" | ") || "Unknown AI error" }
 }
 
-// Reads JSON from the AI reply (removes ```json fences if the AI added them)
 export function parseJson<T>(text: string): T | null {
   try {
-    const clean = text.replace(/^\s*```(?:json)?/i, "").replace(/```\s*$/, "").trim()
+    const clean = text
+      .replace(/^\s*```(?:json)?/i, "")
+      .replace(/```\s*$/, "")
+      .trim()
     return JSON.parse(clean) as T
   } catch {
     return null
