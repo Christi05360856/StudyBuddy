@@ -244,6 +244,28 @@ function TutorContent() {
     setLoading(true)
 
     try {
+      // Load previous chat for this material + topic (if any)
+      if (materialId) {
+        const { data: saved } = await supabase
+          .from("tutor_messages")
+          .select("role, content")
+          .eq("material_id", materialId)
+          .eq("topic", topic)
+          .order("created_at", { ascending: true })
+          .limit(40)
+
+        if (saved && saved.length > 0) {
+          setMessages(
+            saved.map((m) => ({
+              role: m.role as "user" | "assistant",
+              content: m.content,
+            }))
+          )
+          setLoading(false)
+          return
+        }
+      }
+
       const res = await fetch("/api/tutor", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -253,10 +275,11 @@ function TutorContent() {
           context,
           studentName,
           firstMessage: true,
+          materialId,
+          topic,
         }),
       })
       const data = await res.json()
-      // Show the real problem (for example "the AI is busy") instead of a fake first message
       if (!res.ok || !data.reply) {
         throw new Error(data.error || "No reply from the AI.")
       }
@@ -296,13 +319,13 @@ function TutorContent() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: activeTopic
-            ? `[Topic: ${activeTopic}] ${text}`
-            : text,
+          message: activeTopic ? `[Topic: ${activeTopic}] ${text}` : text,
           level,
           context,
           studentName,
-          history: messages.slice(-6),
+          history: messages.slice(-8),
+          materialId,
+          topic: activeTopic || "general",
         }),
       })
       const data = await res.json()
@@ -316,7 +339,8 @@ function TutorContent() {
         ...prev,
         {
           role: "assistant",
-          content: (err instanceof Error && err.message) || "Something went wrong. Please try again.",
+          content:
+            (err instanceof Error && err.message) || "Something went wrong. Please try again.",
         },
       ])
     } finally {
