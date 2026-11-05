@@ -256,15 +256,18 @@ function TutorContent() {
         }),
       })
       const data = await res.json()
+      // Show the real problem (for example "the AI is busy") instead of a fake first message
+      if (!res.ok || !data.reply) {
+        throw new Error(data.error || "No reply from the AI.")
+      }
+      setMessages([{ role: "assistant", content: data.reply }])
+    } catch (err) {
       setMessages([
         {
           role: "assistant",
-          content: data.reply || "Let's begin this topic.",
+          content:
+            (err instanceof Error && err.message) || "Could not start this topic. Please try again.",
         },
-      ])
-    } catch {
-      setMessages([
-        { role: "assistant", content: "Could not start this topic. Try again." },
       ])
     } finally {
       setLoading(false)
@@ -308,10 +311,13 @@ function TutorContent() {
         ...prev,
         { role: "assistant", content: data.reply || "No reply." },
       ])
-    } catch {
+    } catch (err) {
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: "Something went wrong. Please try again." },
+        {
+          role: "assistant",
+          content: (err instanceof Error && err.message) || "Something went wrong. Please try again.",
+        },
       ])
     } finally {
       setLoading(false)
