@@ -37,6 +37,9 @@ interface Material {
   file_path: string
   created_at: string
   topics: string[] | null
+  // What the AI is doing right now (set by the server while it works)
+  stage?: string | null
+  progress?: number | null
   // How many questions this note really has (counted by the database)
   questions: { count: number }[] | null
 }
@@ -133,14 +136,21 @@ export default function CourseDetailPage() {
       setEditDate(courseData.assessment_date ?? "")
     }
 
-    const { data: mats } = await supabase
-      .from("materials")
-      .select("id, title, page_count, status, file_path, created_at, topics, questions(count)")
-      .eq("course_id", courseId)
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false })
+    const baseColumns = "id, title, page_count, status, file_path, created_at, topics, questions(count)"
+    const loadMaterials = (columns: string) =>
+      supabase
+        .from("materials")
+        .select(columns)
+        .eq("course_id", courseId)
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false })
 
-    if (mats) setMaterials(mats)
+    // Ask for the progress columns too. If they do not exist yet (supabase-update-2.sql not run),
+    // fall back to the old list so the page still works.
+    let { data: mats, error: matsError } = await loadMaterials(baseColumns + ", stage, progress")
+    if (matsError) ({ data: mats } = await loadMaterials(baseColumns))
+
+    if (mats) setMaterials(mats as unknown as Material[])
     setLoading(false)
   }
 
@@ -151,12 +161,12 @@ export default function CourseDetailPage() {
     load()
   }, [courseId])
 
-  // While any note is being prepared, quietly check again every 4 seconds.
+  // While any note is being prepared, quietly check again every 2.5 seconds.
   // We watch a simple true/false value, so the timer is not restarted on every refresh.
   const hasProcessing = materials.some((m) => m.status === "processing")
   useEffect(() => {
     if (!hasProcessing) return
-    const interval = setInterval(() => load(), 4000)
+    const interval = setInterval(() => load(), 2500)
     return () => clearInterval(interval)
   }, [hasProcessing])
 
@@ -367,6 +377,13 @@ export default function CourseDetailPage() {
   const isStuck = (m: Material) =>
     m.status === "processing" && Date.now() - new Date(m.created_at).getTime() > 3 * 60 * 1000
 
+  // What to tell the student while the AI works
+  const stageText = (m: Material) => {
+    if (m.stage === "reading") return "Reading your notes..."
+    if (m.stage === "writing") return "Writing your questions..."
+    if (m.stage === "saving") return "Almost done..."
+    return "Preparing your content. This can take a minute..."
+  }
   const needsRetry = (m: Material) => m.status === "failed" || isStuck(m) || noQuestions(m)
 
   if (loading) {
@@ -511,9 +528,7 @@ export default function CourseDetailPage() {
                       )}
                       {m.status === "ready" && !noQuestions(m) ? `${questionCount(m)} questions · ready` : null}
                       {noQuestions(m) && "Not fully prepared yet – try again"}
-                      {m.status === "processing" &&
-                        !isStuck(m) &&
-                        "Preparing your content. This can take a minute..."}
+                      {m.status === "processing" && !isStuck(m) && stageText(m)}
                       {m.status === "processing" && isStuck(m) && "Taking too long – try again"}
                       {m.status === "uploading" && "Uploading..."}
                       {m.status === "failed" && "Could not prepare this file – try again"}
@@ -527,6 +542,18 @@ export default function CourseDetailPage() {
                   )}
                   {needsRetry(m) && <AlertCircle size={20} className="text-danger shrink-0" />}
                 </div>
+
+                {m.status === "processing" && !isStuck(m) && typeof m.progress === "number" && m.progress > 0 && (
+                  <div
+                    className="h-2 rounded-full bg-muted overflow-hidden"
+                    role="progressbar"
+                    aria-valuenow={m.progress}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                  >
+                    <div className="h-full bg-primary rounded-full transition-all duration-500" style={{ width: `${m.progress}%` }} />
+                  </div>
+                )}
 
                 <div className="flex gap-2">
                   <Button
