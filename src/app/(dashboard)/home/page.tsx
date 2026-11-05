@@ -1,0 +1,358 @@
+// PATH: src/app/(dashboard)/home/page.tsx
+"use client"
+
+import { useEffect, useState } from "react"
+import { BottomNav } from "@/components/bottom-nav"
+import { Plus, Loader2, ChevronRight, FileText, Flame, Calendar } from "lucide-react"
+import Link from "next/link"
+import { createClient } from "@/lib/supabase/client"
+import { computeStreak, daysUntil, lagosToday } from "@/lib/streak"
+import { DEPARTMENTS, LEVELS } from "@/lib/departments"
+import { SearchableSelect } from "@/components/ui/searchable-select"
+import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
+import { HeadphonesButton } from "@/components/music/headphones-button"
+
+type Course = {
+  id: string
+  code: string
+  title: string | null
+  assessment_date: string | null
+}
+type Note = { id: string; title: string; course_id: string }
+
+function getInitials(fullName: string): string {
+  const words = fullName.trim().split(/\s+/).filter(Boolean)
+  if (words.length === 0) return "?"
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase()
+  return (words[0][0] + words[words.length - 1][0]).toUpperCase()
+}
+
+export default function HomePage() {
+  const [fullName, setFullName] = useState("")
+  const [courses, setCourses] = useState<Course[]>([])
+  const [notes, setNotes] = useState<Note[]>([])
+  const [search, setSearch] = useState("")
+  const [loading, setLoading] = useState(true)
+  const [streak, setStreak] = useState(0)
+  const [needsProfile, setNeedsProfile] = useState(false)
+  const [dept, setDept] = useState("")
+  const [level, setLevel] = useState("")
+  const [savingProfile, setSavingProfile] = useState(false)
+  const [profileError, setProfileError] = useState<string | null>(null)
+  const supabase = createClient()
+
+  useEffect(() => {
+    const load = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+      if (!user) {
+        setLoading(false)
+        return
+      }
+
+      const [profileRes, coursesRes, notesRes, daysRes] = await Promise.all([
+        supabase
+          .from("profiles")
+          .select("full_name, department, level")
+          .eq("id", user.id)
+          .single(),
+        supabase
+          .from("courses")
+          .select("id, code, title, assessment_date")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("materials")
+          .select("id, title, course_id")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: false }),
+        supabase.from("study_days").select("day").eq("user_id", user.id),
+      ])
+
+      if (profileRes.data?.full_name) setFullName(profileRes.data.full_name)
+      if (coursesRes.data) setCourses(coursesRes.data)
+      if (notesRes.data) setNotes(notesRes.data)
+
+      const days = (daysRes.data ?? []).map((r) => r.day as string)
+      setStreak(computeStreak(days))
+
+      // One-time prompt for existing users who signed up before department/level existed
+      if (profileRes.data && (!profileRes.data.department || !profileRes.data.level)) {
+        setNeedsProfile(true)
+        setDept(profileRes.data.department ?? "")
+        setLevel(profileRes.data.level ?? "")
+      }
+
+      setLoading(false)
+    }
+    load()
+  }, [])
+
+  const saveProfileExtras = async () => {
+    if (!dept || !level) {
+      setProfileError("Please choose both department and level.")
+      return
+    }
+    setSavingProfile(true)
+    setProfileError(null)
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user) return
+
+    const { error } = await supabase
+      .from("profiles")
+      .update({ department: dept, level })
+      .eq("id", user.id)
+
+    if (error) {
+      setProfileError("Could not save. Please try again.")
+      setSavingProfile(false)
+      return
+    }
+    setNeedsProfile(false)
+    setSavingProfile(false)
+  }
+
+  const firstName = fullName.split(" ")[0] || "there"
+  const hour = new Date().getHours()
+  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening"
+
+  const notesCount = (courseId: string) => notes.filter((n) => n.course_id === courseId).length
+
+  // Nearest upcoming assessment (or most recent past one if none upcoming)
+  const today = lagosToday()
+  const withDate = courses.filter((c) => c.assessment_date)
+  const upcoming = withDate
+    .filter((c) => (c.assessment_date as string) >= today)
+    .sort((a, b) => ((a.assessment_date as string) < (b.assessment_date as string) ? -1 : 1))
+  const nearest = upcoming[0] ?? null
+  const nearestDays = nearest?.assessment_date ? daysUntil(nearest.assessment_date) : null
+
+  const query = search.trim().toLowerCase()
+  const matchedCourses = courses.filter(
+    (c) => c.code.toLowerCase().includes(query) || (c.title ?? "").toLowerCase().includes(query)
+  )
+  const matchedNotes = notes.filter((n) => n.title.toLowerCase().includes(query))
+
+  return (
+    <div className="min-h-screen pb-24">
+      <div className="max-w-lg mx-auto px-5 pt-8">
+        <div className="flex items-start justify-between mb-6">
+          <div>
+            <p className="text-sm text-gray-500">{greeting}</p>
+            <h1 className="text-2xl font-bold text-foreground">
+              {loading ? "..." : `Hi, ${firstName}`}
+            </h1>
+          </div>
+          <div className="flex items-center gap-2">
+            <HeadphonesButton />
+            <Link
+              href="/profile"
+              aria-label="Open my profile"
+              className="w-9 h-9 rounded-full bg-accent flex items-center justify-center text-sm font-bold text-foreground"
+            >
+              {fullName ? getInitials(fullName) : "?"}
+            </Link>
+          </div>
+        </div>
+
+        {/* Streak + nearest assessment */}
+        {!loading && (
+          <div className="grid grid-cols-2 gap-3 mb-6">
+            <div className="rounded-2xl bg-card border border-border p-4 flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-orange-50 flex items-center justify-center">
+                <Flame size={20} className="text-orange-500" />
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Streak</p>
+                <p className="font-bold text-foreground">
+                  {streak > 0 ? `${streak} day${streak === 1 ? "" : "s"}` : "Start today"}
+                </p>
+              </div>
+            </div>
+            <div className="rounded-2xl bg-card border border-border p-4 flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                <Calendar size={20} className="text-primary" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs text-gray-500">Next test</p>
+                {nearest && nearestDays !== null ? (
+                  <p className="font-bold text-foreground truncate">
+                    {nearest.code} · {nearestDays === 0 ? "today" : nearestDays === 1 ? "1 day" : `${nearestDays} days`}
+                  </p>
+                ) : (
+                  <p className="font-medium text-gray-400 text-sm">None set</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* One-time department / level prompt for older accounts */}
+        {needsProfile && (
+          <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4 mb-6 space-y-3">
+            <p className="text-sm font-medium text-foreground">
+              Quick setup – tell us your department and level
+            </p>
+            <SearchableSelect
+              id="home-department"
+              title="Choose your department"
+              value={dept}
+              onChange={(v) => {
+                setDept(v)
+                setProfileError(null)
+              }}
+              options={[...DEPARTMENTS]}
+              placeholder="Department"
+              searchPlaceholder="Search department"
+            />
+            <div className="grid grid-cols-3 gap-2">
+              {LEVELS.map((lvl) => (
+                <button
+                  key={lvl}
+                  type="button"
+                  onClick={() => {
+                    setLevel(lvl)
+                    setProfileError(null)
+                  }}
+                  className={cn(
+                    "min-h-10 px-2 py-1.5 rounded-xl border text-sm font-medium transition-colors",
+                    level === lvl
+                      ? "bg-primary text-white border-primary"
+                      : "bg-card border-border text-foreground"
+                  )}
+                >
+                  {lvl}
+                </button>
+              ))}
+            </div>
+            {profileError && <p className="text-sm text-danger">{profileError}</p>}
+            <Button className="w-full" size="sm" disabled={savingProfile} onClick={saveProfileExtras}>
+              {savingProfile ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        )}
+
+        <div className="relative mb-8">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search courses and notes"
+            className="w-full h-12 rounded-xl border border-border bg-card pl-4 pr-4 text-sm placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-primary/20"
+          />
+        </div>
+
+        {query ? (
+          <div className="space-y-6">
+            <div>
+              <h2 className="font-semibold text-foreground mb-3">Courses</h2>
+              {matchedCourses.length === 0 ? (
+                <p className="text-sm text-gray-500">No matching courses.</p>
+              ) : (
+                <div className="space-y-2">
+                  {matchedCourses.map((c) => (
+                    <Link
+                      key={c.id}
+                      href={`/courses/${c.id}`}
+                      className="flex items-center gap-3 p-4 rounded-2xl bg-card border border-border"
+                    >
+                      <p className="font-semibold flex-1">{c.code}</p>
+                      <ChevronRight size={18} className="text-gray-400" />
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div>
+              <h2 className="font-semibold text-foreground mb-3">Notes</h2>
+              {matchedNotes.length === 0 ? (
+                <p className="text-sm text-gray-500">No matching notes.</p>
+              ) : (
+                <div className="space-y-2">
+                  {matchedNotes.map((n) => (
+                    <Link
+                      key={n.id}
+                      href={`/courses/${n.course_id}`}
+                      className="flex items-center gap-3 p-4 rounded-2xl bg-card border border-border"
+                    >
+                      <FileText size={18} className="text-gray-400 shrink-0" />
+                      <p className="text-sm font-medium truncate flex-1">{n.title}</p>
+                    </Link>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
+            <Link
+              href="/courses"
+              className="flex items-center gap-3 p-4 rounded-2xl border-2 border-dashed border-border mb-8 hover:border-primary/40 transition-colors"
+            >
+              <div className="w-10 h-10 rounded-xl bg-muted flex items-center justify-center">
+                <Plus size={20} className="text-gray-500" />
+              </div>
+              <div>
+                <p className="font-medium text-foreground">Add class notes</p>
+                <p className="text-sm text-gray-500">Upload a PDF and get a quiz</p>
+              </div>
+            </Link>
+
+            <div>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="font-semibold text-foreground">My courses</h2>
+                <Link href="/courses" className="text-sm text-primary font-medium">
+                  See all
+                </Link>
+              </div>
+
+              {loading ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="animate-spin text-primary" size={24} />
+                </div>
+              ) : courses.length === 0 ? (
+                <Link
+                  href="/courses"
+                  className="block p-4 rounded-2xl bg-card border border-border text-center text-gray-500 text-sm"
+                >
+                  No courses yet. Tap here to add your first course.
+                </Link>
+              ) : (
+                <div className="space-y-3">
+                  {courses.slice(0, 4).map((c) => {
+                    const count = notesCount(c.id)
+                    return (
+                      <Link
+                        key={c.id}
+                        href={`/courses/${c.id}`}
+                        className="flex items-center gap-4 p-4 rounded-2xl bg-card border border-border hover:border-primary/30 transition-colors"
+                      >
+                        <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center text-primary font-bold text-sm">
+                          {c.code.split(" ")[0].slice(0, 4)}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-semibold">{c.code}</p>
+                          <p className="text-sm text-gray-500 truncate">
+                            {c.title ? `${c.title} · ` : ""}
+                            {count} {count === 1 ? "note" : "notes"}
+                          </p>
+                        </div>
+                        <ChevronRight size={18} className="text-gray-400" />
+                      </Link>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+
+      <BottomNav />
+    </div>
+  )
+}
