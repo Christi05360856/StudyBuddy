@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { callGemini, parseJson } from "@/lib/ai/gemini"
 import { createClient } from "@/lib/supabase/server"
-import { AI_LIMITS, limitReachedMessage } from "@/lib/ai/limits"
+import { AI_LIMITS, limitReachedMessage, isMissingLimitSetup } from "@/lib/ai/limits"
 
 // Backup route: only used when a material has no saved topics yet
 export async function POST(req: NextRequest) {
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
     )
     if (creditError) {
       console.error("consume_ai_credit error:", creditError)
-      if (creditError.code !== "42883") {
+      if (!isMissingLimitSetup(creditError)) {
         return NextResponse.json(
           { topics: [], error: "Could not check usage limit. Please try again." },
           { status: 500 }
