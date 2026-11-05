@@ -5,12 +5,9 @@ import { createClient } from "@/lib/supabase/server"
 import {
   AI_LIMITS,
   limitReachedMessage,
-  isMissingLimitSetup,
   providerBusyMessage,
-  isProviderQuotaError,
 } from "@/lib/ai/limits"
 
-// Backup route: only used when a material has no saved topics yet
 export async function POST(req: NextRequest) {
   try {
     const supabase = await createClient()
@@ -21,18 +18,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Please log in again." }, { status: 401 })
     }
 
+    // Fail-open on limit errors so topics still work
     const { data: allowed, error: creditError } = await supabase.rpc("consume_ai_credit", {
       feature: "topics",
       daily_limit: AI_LIMITS.topics,
     })
     if (creditError) {
       console.error("consume_ai_credit error:", creditError)
-      if (!isMissingLimitSetup(creditError)) {
-        return NextResponse.json(
-          { topics: [], error: "Could not check usage limit. Please try again." },
-          { status: 500 }
-        )
-      }
     } else if (allowed === false) {
       return NextResponse.json(
         { topics: [], error: limitReachedMessage("topics") },
@@ -41,7 +33,6 @@ export async function POST(req: NextRequest) {
     }
 
     const { materialTitle, context } = await req.json()
-
     const notes = typeof context === "string" ? context.slice(0, 8000) : ""
 
     const prompt = `You are helping a Nigerian university/polytechnic student study.
@@ -61,10 +52,7 @@ Return ONLY a JSON array of 5 to 12 short topic names, like:
 
     if (!result.ok) {
       console.error("Topics error:", result.error)
-      const friendly = isProviderQuotaError(result.error)
-        ? providerBusyMessage()
-        : providerBusyMessage()
-      return NextResponse.json({ topics: [], error: friendly })
+      return NextResponse.json({ topics: [], error: providerBusyMessage() })
     }
 
     const parsed = parseJson<unknown>(result.text)
