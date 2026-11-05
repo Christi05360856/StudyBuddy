@@ -9,6 +9,7 @@ import mammoth from "mammoth"
 import WordExtractor from "word-extractor"
 import JSZip from "jszip"
 import readXlsxFile from "read-excel-file/node"
+import { extractText, getDocumentProxy } from "unpdf"
 import { FILE_TYPES, getExtension, type FileKind } from "@/lib/file-types"
 
 // ---------- What the AI receives ----------
@@ -16,6 +17,8 @@ import { FILE_TYPES, getExtension, type FileKind } from "@/lib/file-types"
 export type MaterialInput =
   | { type: "inline"; mimeType: string; base64: string; kind: FileKind }
   | { type: "text"; text: string; kind: FileKind }
+  // A PDF whose text we could read ourselves, page by page (fast, and gives real page numbers)
+  | { type: "pages"; pages: { page: number; text: string }[]; kind: FileKind }
 
 // Longest text we send to the AI. Very long files are cut here so the AI answers in time.
 const MAX_TEXT_CHARS = 150_000
@@ -46,6 +49,29 @@ function asText(text: string, kind: FileKind): ExtractResult {
     }
   }
   return { ok: true, input: { type: "text", text: clean.slice(0, MAX_TEXT_CHARS), kind } }
+}
+
+// PDF: read the text of every page. Returns null when the PDF is a scan (almost no text),
+// so the caller can send the file to the AI as pictures instead.
+async function readPdfPages(buffer: Buffer): Promise<{ page: number; text: string }[] | null> {
+  const pdf = await getDocumentProxy(new Uint8Array(buffer))
+  const { text } = await extractText(pdf, { mergePages: false })
+  const pages = (Array.isArray(text) ? text : [text]).map((t, i) => ({ page: i + 1, text: tidy(t) }))
+
+  const totalChars = pages.reduce((sum, p) => sum + p.text.length, 0)
+  // Fewer than ~60 characters per page on average means the PDF is mostly pictures
+  if (pages.length === 0 || totalChars / pages.length < 60) return null
+
+  // Stop when we have enough text, so huge books do not slow everything down
+  const kept: { page: number; text: string }[] = []
+  let used = 0
+  for (const p of pages) {
+    if (!p.text) continue
+    if (used + p.text.length > MAX_TEXT_CHARS) break
+    kept.push(p)
+    used += p.text.length
+  }
+  return kept
 }
 
 // PowerPoint: read the text of every slide, in order
@@ -121,7 +147,21 @@ export async function extractContent(buffer: Buffer, fileName: string): Promise<
 
   try {
     switch (info.kind) {
-      case "pdf":
+      case "pdf": {
+        // Try to read the text ourselves first. It is much faster than asking the AI to read the file.
+        try {
+          const pages = await readPdfPages(buffer)
+          if (pages) return { ok: true, input: { type: "pages", pages, kind: "pdf" } }
+        } catch (err) {
+          console.error("PDF text reading failed, sending file to the AI instead:", err)
+        }
+        // Scanned or unreadable PDF: let the AI look at it
+        return {
+          ok: true,
+          input: { type: "inline", mimeType: info.mime!, base64: buffer.toString("base64"), kind: "pdf" },
+        }
+      }
+
       case "image":
         return {
           ok: true,
