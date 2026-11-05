@@ -2,7 +2,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { callGemini } from "@/lib/ai/gemini"
 import { createClient } from "@/lib/supabase/server"
-import { AI_LIMITS, limitReachedMessage } from "@/lib/ai/limits"
+import { AI_LIMITS, limitReachedMessage, isMissingLimitSetup } from "@/lib/ai/limits"
 
 const LEVEL_INSTRUCTIONS = {
   primary: `Explain like the student is in Primary 2. Use very simple words, short sentences, and everyday examples a child would understand. Avoid jargon. If you must use a technical word, explain it immediately in simple terms.`,
@@ -30,7 +30,7 @@ export async function POST(req: NextRequest) {
     )
     if (creditError) {
       console.error("consume_ai_credit error:", creditError)
-      if (creditError.code !== "42883") {
+      if (!isMissingLimitSetup(creditError)) {
         return NextResponse.json(
           { error: "Could not check usage limit. Please try again." },
           { status: 500 }
