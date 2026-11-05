@@ -2,12 +2,17 @@
 import { NextRequest, NextResponse } from "next/server"
 import { callGemini, parseJson } from "@/lib/ai/gemini"
 import { createClient } from "@/lib/supabase/server"
-import { AI_LIMITS, limitReachedMessage, isMissingLimitSetup } from "@/lib/ai/limits"
+import {
+  AI_LIMITS,
+  limitReachedMessage,
+  isMissingLimitSetup,
+  providerBusyMessage,
+  isProviderQuotaError,
+} from "@/lib/ai/limits"
 
 // Backup route: only used when a material has no saved topics yet
 export async function POST(req: NextRequest) {
   try {
-    // Only logged-in students can use the AI (stops strangers using up our AI quota)
     const supabase = await createClient()
     const {
       data: { user },
@@ -16,11 +21,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Please log in again." }, { status: 401 })
     }
 
-    // --- Daily AI limit ---
-    const { data: allowed, error: creditError } = await supabase.rpc(
-      "consume_ai_credit",
-      { feature: "topics", daily_limit: AI_LIMITS.topics }
-    )
+    const { data: allowed, error: creditError } = await supabase.rpc("consume_ai_credit", {
+      feature: "topics",
+      daily_limit: AI_LIMITS.topics,
+    })
     if (creditError) {
       console.error("consume_ai_credit error:", creditError)
       if (!isMissingLimitSetup(creditError)) {
@@ -56,7 +60,11 @@ Return ONLY a JSON array of 5 to 12 short topic names, like:
     })
 
     if (!result.ok) {
-      return NextResponse.json({ topics: [], error: result.error })
+      console.error("Topics error:", result.error)
+      const friendly = isProviderQuotaError(result.error)
+        ? providerBusyMessage()
+        : providerBusyMessage()
+      return NextResponse.json({ topics: [], error: friendly })
     }
 
     const parsed = parseJson<unknown>(result.text)
