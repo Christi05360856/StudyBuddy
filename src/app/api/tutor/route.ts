@@ -7,7 +7,6 @@ import {
   limitReachedMessage,
   isMissingLimitSetup,
   providerBusyMessage,
-  isProviderQuotaError,
 } from "@/lib/ai/limits"
 
 const LEVEL_INSTRUCTIONS = {
@@ -28,18 +27,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Please log in again." }, { status: 401 })
     }
 
+    // Daily limit — fail OPEN so a broken RPC never blocks the tutor
     const { data: allowed, error: creditError } = await supabase.rpc("consume_ai_credit", {
       feature: "tutor",
       daily_limit: AI_LIMITS.tutor,
     })
     if (creditError) {
       console.error("consume_ai_credit error:", creditError)
-      if (!isMissingLimitSetup(creditError)) {
-        return NextResponse.json(
-          { error: "Could not check usage limit. Please try again." },
-          { status: 500 }
-        )
-      }
+      // Fail-open: log and continue so students can still use the tutor
     } else if (allowed === false) {
       return NextResponse.json({ error: limitReachedMessage("tutor") }, { status: 429 })
     }
@@ -108,13 +103,10 @@ Student: ${message}`
 
     if (!result.ok) {
       console.error("Tutor error:", result.error)
-      const friendly = isProviderQuotaError(result.error)
-        ? providerBusyMessage()
-        : providerBusyMessage()
-      return NextResponse.json({ error: friendly, detail: result.error }, { status: 503 })
+      // Never show technical model names / codes to students
+      return NextResponse.json({ error: providerBusyMessage() }, { status: 503 })
     }
 
-    // Persist conversation so the student can resume later
     if (typeof materialId === "string" && materialId) {
       const topicKey =
         typeof topic === "string" && topic.trim() ? topic.trim().slice(0, 200) : "general"
@@ -144,7 +136,7 @@ Student: ${message}`
   } catch (err) {
     console.error(err)
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Failed" },
+      { error: "Something went wrong. Please try again." },
       { status: 500 }
     )
   }
