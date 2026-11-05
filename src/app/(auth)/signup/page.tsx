@@ -2,6 +2,7 @@
 "use client"
 
 import { useState } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
@@ -23,6 +24,8 @@ export default function SignUpPage() {
   const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Set after sign up when Supabase wants the student to confirm their email first
+  const [sentTo, setSentTo] = useState<string | null>(null)
 
   const [form, setForm] = useState({
     firstName: "",
@@ -90,6 +93,8 @@ export default function SignUpPage() {
         email,
         password: form.password,
         options: {
+          // Where the confirmation link in the email brings the student back to
+          emailRedirectTo: `${window.location.origin}/auth/callback?next=/home`,
           data: {
             full_name: fullName,
             matric_number: form.matricNumber.trim(),
@@ -108,6 +113,10 @@ export default function SignUpPage() {
         if (msg.includes("already registered")) {
           throw new Error("This email is already registered. Please log in.")
         }
+        // The database refuses a second account with the same matric number
+        if (msg.includes("database error")) {
+          throw new Error("This matric number is already registered, or your details could not be saved.")
+        }
         throw authError
       }
 
@@ -115,10 +124,17 @@ export default function SignUpPage() {
         throw new Error("Could not create your account. Please try again.")
       }
 
+      // With email confirmation on, Supabase hides "this email already exists" by returning a user
+      // with no identities. Nothing is sent in that case, so say so instead of showing "check your email".
+      if (authData.user.identities && authData.user.identities.length === 0) {
+        throw new Error("This email is already registered. Please log in.")
+      }
+
+      // Email confirmation is on: no session yet. The profile is created by the database
+      // (supabase-update-2.sql) from the details above, and login finishes after they confirm.
       if (!authData.session) {
-        throw new Error(
-          "Account created, but email confirmation is switched on. Please contact the admin."
-        )
+        setSentTo(email)
+        return
       }
 
       const { error: profileError } = await supabase.from("profiles").upsert({
@@ -149,6 +165,27 @@ export default function SignUpPage() {
   }
 
   const schoolList = form.institutionType ? INSTITUTIONS[form.institutionType] : []
+
+  if (sentTo) {
+    return (
+      <AuthShell
+        active="signup"
+        headline="One last step."
+        subtext="Confirm your email so only you can use your account."
+        heading="Check your email"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-foreground">
+            We sent a confirmation link to <span className="font-semibold">{sentTo}</span>. Open it, then come back and log in.
+          </p>
+          <p className="text-sm text-gray-500">No email after a few minutes? Check your spam folder.</p>
+          <Link href="/login">
+            <Button className="w-full" size="lg">Go to log in</Button>
+          </Link>
+        </div>
+      </AuthShell>
+    )
+  }
 
   return (
     <AuthShell
