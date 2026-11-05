@@ -92,7 +92,11 @@ export async function POST(req: NextRequest) {
     })
 
     if (!analysis.ok) {
-      return fail("AI error: " + analysis.error)
+      // Log the real reason for developers; show a short friendly message to students
+      console.error("process-material AI error:", analysis.error)
+      return fail(
+        "The AI is busy or could not read this file right now. Please try again in a few minutes. If it is a scan or photo, make sure it is clear."
+      )
     }
 
     if (analysis.questions.length === 0) {
