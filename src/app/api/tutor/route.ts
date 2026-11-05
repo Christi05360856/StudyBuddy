@@ -94,7 +94,12 @@ Student: ${message}`
 
     if (!result.ok) {
       console.error("Tutor error:", result.error)
-      return NextResponse.json({ error: result.error }, { status: 500 })
+      // The student sees a short friendly message. The technical detail stays in the server log
+      // and in /api/ai-check.
+      return NextResponse.json(
+        { error: "The AI is busy or out of free usage right now. Please try again in a minute." },
+        { status: 503 }
+      )
     }
 
     return NextResponse.json({ reply: result.text })
