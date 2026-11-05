@@ -1,7 +1,11 @@
 // PATH: src/app/auth/callback/route.ts
-// The page a student lands on when they tap the link in the "reset your password" email.
-// It turns the link into a real login session, then sends them to the new-password page.
-// It understands both kinds of email link Supabase can send (see the setup notes).
+// The page a student lands on when they tap a link in an email from us:
+//  - "confirm your email" after sign up  (goes on to /home)
+//  - "reset your password"               (goes on to /reset-password)
+// It turns the link into a real login session. It understands both kinds of email link
+// Supabase can send (see the setup notes).
+//
+// IMPORTANT: this file must live at src/app/auth/callback/route.ts so the address is /auth/callback.
 
 import { NextResponse, type NextRequest } from "next/server"
 import type { EmailOtpType } from "@supabase/supabase-js"
@@ -32,5 +36,10 @@ export async function GET(request: NextRequest) {
   }
 
   if (ok) return NextResponse.redirect(`${origin}${next}`)
-  return NextResponse.redirect(`${origin}/forgot-password?error=expired`)
+
+  // An old or already-used link. Confirmation links go back to log in, reset links to "forgot password".
+  const isConfirmation = type === "signup" || type === "email" || next === "/home"
+  return NextResponse.redirect(
+    isConfirmation ? `${origin}/login?error=link` : `${origin}/forgot-password?error=expired`
+  )
 }
