@@ -25,6 +25,7 @@ export async function GET() {
 
   return NextResponse.json({
     keyIsSet: Boolean(process.env.GEMINI_API_KEY),
+    fallbackConfigured: Boolean(process.env.FALLBACK_LLM_API_KEY && process.env.FALLBACK_LLM_MODEL),
     ...(result.ok
       ? { working: true, modelUsed: result.model, reply: result.text.trim() }
       : { working: false, problem: result.error }),
