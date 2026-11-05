@@ -14,3 +14,12 @@ export function limitReachedMessage(feature: AiFeature): string {
   const limit = AI_LIMITS[feature]
   return `You have used ${limit} of ${limit} today. It resets at midnight.`
 }
+
+/**
+ * True when the daily-limit function is simply not set up in the database
+ * (supabase-update-1.sql not run). PostgREST reports a missing function as
+ * PGRST202, plain Postgres as 42883. In that case the AI should still work.
+ */
+export function isMissingLimitSetup(error: { code?: string } | null | undefined): boolean {
+  return error?.code === "PGRST202" || error?.code === "42883"
+}
