@@ -3,6 +3,7 @@ import type { Metadata, Viewport } from "next"
 import "./globals.css"
 import { PwaSetup } from "@/components/pwa-setup"
 import { MusicProvider } from "@/components/music/mini-player"
+import { OnboardingTour } from "@/components/onboarding-tour"
 
 export const metadata: Metadata = {
   title: {
@@ -53,6 +54,7 @@ export default function RootLayout({
       <body className="min-h-screen antialiased">
         <MusicProvider>
           {children}
+          <OnboardingTour />
         </MusicProvider>
         <PwaSetup />
       </body>
