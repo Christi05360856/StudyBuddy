@@ -32,7 +32,6 @@ function FlashcardsContent() {
 
   const [loading, setLoading] = useState(true)
   const [materialTitle, setMaterialTitle] = useState("")
-  // Session deck is frozen once built — progress updates must NOT reshuffle it
   const [session, setSession] = useState<Card[]>([])
   const [index, setIndex] = useState(0)
   const [flipped, setFlipped] = useState(false)
@@ -214,8 +213,8 @@ function FlashcardsContent() {
             <ArrowLeft size={20} />
           </button>
           <div className="text-center py-12 space-y-4">
-            <div className="mx-auto w-16 h-16 rounded-full bg-primary/15 flex items-center justify-center">
-              <Sparkles className="text-primary" size={28} />
+            <div className="mx-auto w-16 h-16 rounded-full bg-accent-soft flex items-center justify-center">
+              <Sparkles className="text-amber-700" size={28} />
             </div>
             <p className="text-2xl font-bold">Nice work</p>
             <p className="text-gray-500">
@@ -248,7 +247,6 @@ function FlashcardsContent() {
   return (
     <div className="min-h-screen pb-24">
       <div className="max-w-lg mx-auto px-5 pt-6">
-        {/* Header */}
         <div className="flex items-center gap-3 mb-3">
           <button
             onClick={() => router.back()}
@@ -266,7 +264,6 @@ function FlashcardsContent() {
           </p>
         </div>
 
-        {/* Progress bar — primary brand colour */}
         <div className="h-1.5 rounded-full bg-primary/15 mb-6 overflow-hidden">
           <div
             className="h-full rounded-full bg-primary transition-all duration-300 ease-out"
@@ -274,7 +271,11 @@ function FlashcardsContent() {
           />
         </div>
 
-        {/* Themed flashcard */}
+        {/*
+          Brand balance:
+          - Question → warm accent yellow (app accent)
+          - Answer → primary blue
+        */}
         <button
           type="button"
           key={current?.key}
@@ -282,30 +283,20 @@ function FlashcardsContent() {
             if (!busy && !transitioning.current) setFlipped((f) => !f)
           }}
           className={cn(
-            "group relative w-full min-h-[300px] rounded-3xl p-6 text-left",
+            "relative w-full min-h-[300px] rounded-3xl p-6 text-left",
             "flex flex-col justify-center gap-4",
             "shadow-md transition-all duration-200",
-            "active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50",
+            "active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40",
             flipped
-              ? // Answer side — soft primary wash
-                "bg-primary text-white border border-primary shadow-primary/20"
-              : // Question side — card surface with primary accent strip
-                "bg-card border border-border"
+              ? "bg-primary text-white border border-primary shadow-primary/25"
+              : "bg-accent text-foreground border border-amber-300/60 shadow-amber-200/40"
           )}
         >
-          {/* Top accent (question side only) */}
-          {!flipped && (
-            <div
-              className="absolute top-0 left-6 right-6 h-1 rounded-b-full bg-primary/80"
-              aria-hidden
-            />
-          )}
-
-          <div className="flex items-center justify-between gap-2 pt-1">
+          <div className="flex items-center justify-between gap-2">
             <span
               className={cn(
                 "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide",
-                flipped ? "bg-white/20 text-white" : "bg-primary/10 text-primary"
+                flipped ? "bg-white/20 text-white" : "bg-foreground/10 text-foreground"
               )}
             >
               {flipped ? "Answer" : "Question"}
@@ -314,7 +305,7 @@ function FlashcardsContent() {
               <span
                 className={cn(
                   "text-xs truncate max-w-[55%]",
-                  flipped ? "text-white/70" : "text-gray-400"
+                  flipped ? "text-white/70" : "text-foreground/55"
                 )}
               >
                 {current.topic}
@@ -334,14 +325,13 @@ function FlashcardsContent() {
           <p
             className={cn(
               "text-xs mt-auto pt-4",
-              flipped ? "text-white/60" : "text-gray-400"
+              flipped ? "text-white/60" : "text-foreground/50"
             )}
           >
             {flipped ? "Tap to see the question again" : "Tap to reveal the answer"}
           </p>
         </button>
 
-        {/* Actions */}
         {flipped && (
           <div className="flex gap-3 mt-6">
             <Button
