@@ -7,10 +7,10 @@ import { cn } from "@/lib/utils"
 import { Home, BookOpen, Sparkles, BarChart3, User } from "lucide-react"
 
 const links = [
-  { href: "/home", label: "Home", icon: Home },
-  { href: "/courses", label: "Courses", icon: BookOpen },
-  { href: "/tutor", label: "AI Tutor", icon: Sparkles },
-  { href: "/progress", label: "Progress", icon: BarChart3 },
+  { href: "/home", label: "Home", icon: Home, tour: "nav-home" },
+  { href: "/courses", label: "Courses", icon: BookOpen, tour: "nav-courses" },
+  { href: "/tutor", label: "AI Tutor", icon: Sparkles, tour: "nav-tutor" },
+  { href: "/progress", label: "Progress", icon: BarChart3, tour: "nav-progress" },
 ]
 
 // On phones this is a bar at the bottom.
@@ -34,12 +34,13 @@ export function BottomNav() {
       </Link>
 
       <div className="max-w-md mx-auto flex items-stretch justify-around h-16 lg:max-w-none lg:mx-0 lg:h-auto lg:flex-col lg:justify-start lg:gap-1">
-        {links.map(({ href, label, icon: Icon }) => {
+        {links.map(({ href, label, icon: Icon, tour }) => {
           const active = pathname.startsWith(href)
           return (
             <Link
               key={href}
               href={href}
+              data-tour={tour}
               className={cn(
                 "flex-1 flex flex-col items-center justify-center gap-1 text-xs font-medium transition-colors",
                 "lg:flex-none lg:flex-row lg:justify-start lg:gap-3 lg:text-sm lg:px-3 lg:py-2.5 lg:rounded-xl",
