@@ -730,20 +730,20 @@ export default function CourseDetailPage() {
                   </div>
                 )}
 
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Button
                     size="sm"
                     variant="outline"
-                    className="flex-1 text-xs h-9 gap-1.5"
+                    className="min-w-[4.5rem] flex-1 text-xs h-9 gap-1.5"
                     onClick={() => readMaterial(m)}
                   >
                     <BookOpen size={14} />
                     {getExtension(m.file_path) === "pdf" ? "Read" : "Open"}
                   </Button>
                   {m.status === "ready" && !noQuestions(m) && (
-                    <Link href={`/tutor?material=${m.id}`} className="flex-1">
-                      <Button size="sm" className="w-full text-xs h-9">
-                        Study with AI
+                    <Link href={`/tutor?material=${m.id}`} className="min-w-[4.5rem] flex-1">
+                      <Button size="sm" className="w-full text-xs h-9 px-2">
+                        Tutor
                       </Button>
                     </Link>
                   )}
