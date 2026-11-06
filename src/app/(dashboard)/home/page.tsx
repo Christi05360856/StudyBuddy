@@ -373,8 +373,8 @@ export default function HomePage() {
 
             {deptShares.length > 0 && (
               <div className="mb-8">
-                <h2 className="font-semibold text-foreground mb-1">Shared in your department</h2>
-                <p className="text-xs text-gray-500 mb-3">Add these courses — no need to re-upload.</p>
+                <h2 className="font-semibold text-foreground mb-1">From your department</h2>
+                <p className="text-xs text-gray-500 mb-3">Shared courses — add them free, no AI cost.</p>
                 <div className="space-y-2">
                   {deptShares.map((s) => (
                     <Link
@@ -392,59 +392,19 @@ export default function HomePage() {
                           {s.count} shared note{s.count === 1 ? "" : "s"}
                         </p>
                       </div>
-                      <span className="text-xs font-medium text-primary">View</span>
+                      <span className="text-xs font-medium text-primary">Open</span>
                     </Link>
                   ))}
                 </div>
               </div>
             )}
 
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="font-semibold text-foreground">My courses</h2>
-                <Link href="/courses" className="text-sm text-primary font-medium">
-                  See all
-                </Link>
-              </div>
-
-              {loading ? (
-                <div className="flex justify-center py-8">
-                  <Loader2 className="animate-spin text-primary" size={24} />
-                </div>
-              ) : courses.length === 0 ? (
-                <Link
-                  href="/courses"
-                  className="block p-4 rounded-2xl bg-card border border-border text-center text-gray-500 text-sm"
-                >
-                  No courses yet. Tap here to add your first course.
-                </Link>
-              ) : (
-                <div className="space-y-3">
-                  {courses.slice(0, 4).map((c) => {
-                    const count = notesCount(c.id)
-                    return (
-                      <Link
-                        key={c.id}
-                        href={`/courses/${c.id}`}
-                        className="flex items-center gap-4 p-4 rounded-2xl bg-card border border-border hover:border-primary/30 transition-colors"
-                      >
-                        <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center text-primary font-bold text-sm">
-                          {c.code.split(" ")[0].slice(0, 4)}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold">{c.code}</p>
-                          <p className="text-sm text-gray-500 truncate">
-                            {c.title ? `${c.title} · ` : ""}
-                            {count} {count === 1 ? "note" : "notes"}
-                          </p>
-                        </div>
-                        <ChevronRight size={18} className="text-gray-400" />
-                      </Link>
-                    )
-                  })}
-                </div>
-              )}
+            <div className="mt-2 mb-4">
+              <Link href="/courses" className="text-sm font-medium text-primary">
+                See all my courses →
+              </Link>
             </div>
+
           </>
         )}
       </div>
