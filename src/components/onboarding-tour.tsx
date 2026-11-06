@@ -5,13 +5,13 @@ import { useEffect, useState } from "react"
 import { usePathname } from "next/navigation"
 import { cn } from "@/lib/utils"
 
-const STORAGE_KEY = "sb_onboarding_v1"
+export const ONBOARDING_STORAGE_KEY = "sb_onboarding_v1"
+export const ONBOARDING_START_EVENT = "sb-start-tour"
 
 type Step = {
   id: string
   title: string
   body: string
-  /** Matches data-tour="..." on the target control */
   target?: string
 }
 
@@ -42,7 +42,7 @@ const STEPS: Step[] = [
   {
     id: "progress",
     title: "Progress",
-    body: "See quiz scores and how you’re doing over time.",
+    body: "See quiz scores and how you're doing over time.",
     target: "nav-progress",
   },
   {
@@ -57,13 +57,24 @@ const STEPS: Step[] = [
   },
 ]
 
+/** Call from Profile (or anywhere) to open the walkthrough again. */
+export function startOnboardingTour() {
+  try {
+    localStorage.removeItem(ONBOARDING_STORAGE_KEY)
+  } catch {
+    // ignore
+  }
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(ONBOARDING_START_EVENT))
+  }
+}
+
 export function OnboardingTour() {
   const pathname = usePathname()
   const [open, setOpen] = useState(false)
   const [step, setStep] = useState(0)
   const [spot, setSpot] = useState<DOMRect | null>(null)
 
-  // Only on main app screens (not login / signup)
   const onApp =
     pathname.startsWith("/home") ||
     pathname.startsWith("/courses") ||
@@ -76,14 +87,25 @@ export function OnboardingTour() {
   useEffect(() => {
     if (!onApp) return
     try {
-      if (localStorage.getItem(STORAGE_KEY) === "1") return
+      if (localStorage.getItem(ONBOARDING_STORAGE_KEY) === "1") return
     } catch {
       return
     }
-    // Short delay so the bottom nav is painted
-    const t = window.setTimeout(() => setOpen(true), 600)
+    const t = window.setTimeout(() => {
+      setStep(0)
+      setOpen(true)
+    }, 600)
     return () => clearTimeout(t)
   }, [onApp])
+
+  useEffect(() => {
+    const onStart = () => {
+      setStep(0)
+      setOpen(true)
+    }
+    window.addEventListener(ONBOARDING_START_EVENT, onStart)
+    return () => window.removeEventListener(ONBOARDING_START_EVENT, onStart)
+  }, [])
 
   useEffect(() => {
     if (!open) return
@@ -107,7 +129,7 @@ export function OnboardingTour() {
 
   const finish = () => {
     try {
-      localStorage.setItem(STORAGE_KEY, "1")
+      localStorage.setItem(ONBOARDING_STORAGE_KEY, "1")
     } catch {
       // ignore
     }
@@ -119,15 +141,12 @@ export function OnboardingTour() {
     else setStep((s) => s + 1)
   }
 
-  // Tooltip placement: above spotlight if near bottom, else below
   const nearBottom = spot ? spot.top > window.innerHeight * 0.55 : false
 
   return (
     <div className="fixed inset-0 z-[100]" role="dialog" aria-modal="true" aria-label="App tour">
-      {/* Dim overlay */}
       <div className="absolute inset-0 bg-black/50" onClick={finish} />
 
-      {/* Spotlight hole */}
       {spot && (
         <div
           className="absolute rounded-2xl border-2 border-dashed border-primary bg-white/10 pointer-events-none shadow-[0_0_0_9999px_rgba(0,0,0,0.45)]"
@@ -140,12 +159,9 @@ export function OnboardingTour() {
         />
       )}
 
-      {/* Card */}
       <div
         className={cn(
-          "absolute left-4 right-4 max-w-sm mx-auto bg-card rounded-2xl p-5 shadow-xl border border-border",
-          spot && nearBottom && "bottom-auto",
-          spot && !nearBottom && "top-auto"
+          "absolute left-4 right-4 max-w-sm mx-auto bg-card rounded-2xl p-5 shadow-xl border border-border"
         )}
         style={
           spot
