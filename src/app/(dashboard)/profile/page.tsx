@@ -12,6 +12,7 @@ import { LEVELS, cleanDepartment } from "@/lib/departments"
 import { DepartmentField } from "@/components/department-field"
 import { cn } from "@/lib/utils"
 import { ThemeToggle } from "@/components/theme-toggle"
+import { startOnboardingTour } from "@/components/onboarding-tour"
 
 type ProfileData = {
   full_name: string
@@ -166,6 +167,20 @@ export default function ProfilePage() {
             <div className="rounded-2xl border border-border bg-card p-4 mb-4 space-y-3">
               <p className="text-sm font-medium">Appearance</p>
               <ThemeToggle />
+            </div>
+
+            <div className="rounded-2xl border border-border bg-card p-4 mb-4 space-y-2">
+              <p className="text-sm font-medium">Help</p>
+              <p className="text-xs text-gray-500">
+                Short walkthrough of Home, Courses, Tutor, share and study music.
+              </p>
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => startOnboardingTour()}
+              >
+                Replay app tour
+              </Button>
             </div>
 
             {(!profile.department || !profile.level || editing) && (
