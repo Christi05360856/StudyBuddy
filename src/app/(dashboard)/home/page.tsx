@@ -18,8 +18,15 @@ type Course = {
   code: string
   title: string | null
   assessment_date: string | null
+  assessment_type?: string | null
 }
-type Note = { id: string; title: string; course_id: string }
+type Note = {
+  id: string
+  title: string
+  course_id: string
+  status?: string | null
+  created_at?: string | null
+}
 
 function getInitials(fullName: string): string {
   const words = fullName.trim().split(/\s+/).filter(Boolean)
@@ -65,7 +72,7 @@ export default function HomePage() {
           .order("created_at", { ascending: false }),
         supabase
           .from("materials")
-          .select("id, title, course_id")
+          .select("id, title, course_id, status, created_at")
           .eq("user_id", user.id)
           .order("created_at", { ascending: false }),
         supabase.from("study_days").select("day").eq("user_id", user.id),
@@ -117,8 +124,16 @@ export default function HomePage() {
   }
 
   const firstName = fullName.split(" ")[0] || "there"
-  const hour = new Date().getHours()
-  const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening"
+  // Use Africa/Lagos so greeting matches Nigerian local time (not UTC server time)
+  const lagosHour = Number(
+    new Date().toLocaleString("en-GB", {
+      timeZone: "Africa/Lagos",
+      hour: "numeric",
+      hour12: false,
+    })
+  )
+  const greeting =
+    lagosHour < 12 ? "Good morning" : lagosHour < 17 ? "Good afternoon" : "Good evening"
 
   const notesCount = (courseId: string) => notes.filter((n) => n.course_id === courseId).length
 
@@ -159,9 +174,14 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* Streak + nearest assessment */}
+        {/* Streak (+ next assessment only when a date is set) */}
         {!loading && (
-          <div className="grid grid-cols-2 gap-3 mb-6">
+          <div
+            className={cn(
+              "grid gap-3 mb-4",
+              nearest ? "grid-cols-2" : "grid-cols-1"
+            )}
+          >
             <div className="rounded-2xl bg-card border border-border p-4 flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-orange-50 flex items-center justify-center">
                 <Flame size={20} className="text-orange-500" />
@@ -173,23 +193,47 @@ export default function HomePage() {
                 </p>
               </div>
             </div>
-            <div className="rounded-2xl bg-card border border-border p-4 flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
-                <Calendar size={20} className="text-primary" />
-              </div>
-              <div className="min-w-0">
-                <p className="text-xs text-gray-500">Next test</p>
-                {nearest && nearestDays !== null ? (
+            {nearest && nearestDays !== null && (
+              <div className="rounded-2xl bg-card border border-border p-4 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center">
+                  <Calendar size={20} className="text-primary" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs text-gray-500">Next test</p>
                   <p className="font-bold text-foreground truncate">
-                    {nearest.code} · {nearestDays === 0 ? "today" : nearestDays === 1 ? "1 day" : `${nearestDays} days`}
+                    {nearest.code} ·{" "}
+                    {nearestDays === 0
+                      ? "today"
+                      : nearestDays === 1
+                        ? "1 day"
+                        : `${nearestDays} days`}
                   </p>
-                ) : (
-                  <p className="font-medium text-gray-400 text-sm">None set</p>
-                )}
+                </div>
               </div>
-            </div>
+            )}
           </div>
         )}
+
+        {/* Continue studying — most recent ready note */}
+        {!loading && (() => {
+          const ready = notes.filter((n) => n.status === "ready" || !n.status)
+          const last = ready[0]
+          if (!last) return null
+          const course = courses.find((c) => c.id === last.course_id)
+          return (
+            <Link
+              href={`/courses/${last.course_id}`}
+              className="block mb-6 rounded-2xl bg-primary text-white p-4 shadow-sm hover:bg-primary-hover transition-colors"
+            >
+              <p className="text-xs text-white/75 mb-0.5">Continue studying</p>
+              <p className="font-semibold text-base leading-snug truncate">
+                {course ? `${course.code}` : "Your course"}
+                {course?.title ? ` · ${course.title}` : ""}
+              </p>
+              <p className="text-sm text-white/80 mt-1 truncate">{last.title}</p>
+            </Link>
+          )
+        })()}
 
         {/* One-time department / level prompt for older accounts */}
         {needsProfile && (
