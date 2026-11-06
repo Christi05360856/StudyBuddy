@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils"
 import { Flag, Loader2, Minus, Plus, Timer } from "lucide-react"
 import { createClient } from "@/lib/supabase/client"
 import { LAST_RESULT_KEY, type LastResult, type ReviewItem } from "@/lib/quiz-review"
+import { buildAttemptPaper, type QuizQuestion } from "@/lib/quiz-shuffle"
 
 type Question = {
   id: string
@@ -149,7 +150,7 @@ function QuizContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [materialId, retryAttemptId])
 
-  // The student pressed "Start": fix the questions and the timer, then begin
+  // The student pressed "Start": fresh random paper every attempt
   const startQuiz = () => {
     const finalCount = clampCount(count, pool.length)
     const finalMinutes = clampMinutes(minutes)
@@ -162,7 +163,12 @@ function QuizContent() {
       }
     }
 
-    setQuestions(pool.slice(0, finalCount))
+    // New question order + shuffled options every time (not the same paper)
+    const paper = buildAttemptPaper(pool as QuizQuestion[], finalCount)
+    setQuestions(paper)
+    setAnswers({})
+    setFlagged(new Set())
+    setCurrent(0)
     setTimeLimit(finalMinutes * 60)
     setElapsed(0)
     startedAt.current = Date.now()
