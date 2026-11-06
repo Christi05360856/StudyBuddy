@@ -12,6 +12,7 @@ import { DepartmentField } from "@/components/department-field"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { HeadphonesButton } from "@/components/music/headphones-button"
+import type { SharedMaterialRow } from "@/lib/share"
 
 type Course = {
   id: string
@@ -47,6 +48,9 @@ export default function HomePage() {
   const [level, setLevel] = useState("")
   const [savingProfile, setSavingProfile] = useState(false)
   const [profileError, setProfileError] = useState<string | null>(null)
+  const [deptShares, setDeptShares] = useState<
+    { code: string; title: string | null; count: number }[]
+  >([])
   const supabase = createClient()
 
   useEffect(() => {
@@ -62,7 +66,7 @@ export default function HomePage() {
       const [profileRes, coursesRes, notesRes, daysRes] = await Promise.all([
         supabase
           .from("profiles")
-          .select("full_name, department, level")
+          .select("full_name, department, level, institution")
           .eq("id", user.id)
           .single(),
         supabase
@@ -91,6 +95,29 @@ export default function HomePage() {
         setNeedsProfile(true)
         setDept(savedDept ?? "")
         setLevel(profileRes.data.level ?? "")
+      }
+
+      // Department shared courses (grouped by code)
+      if (profileRes.data?.institution && profileRes.data?.department) {
+        const { data: shared } = await supabase
+          .from("shared_materials")
+          .select("course_code, course_title, code_normalized")
+          .eq("institution", profileRes.data.institution)
+          .eq("department", profileRes.data.department)
+
+        const map = new Map<string, { code: string; title: string | null; count: number }>()
+        for (const row of shared || []) {
+          const k = row.code_normalized as string
+          const prev = map.get(k)
+          if (prev) prev.count += 1
+          else
+            map.set(k, {
+              code: row.course_code as string,
+              title: (row.course_title as string) || null,
+              count: 1,
+            })
+        }
+        setDeptShares([...map.values()].slice(0, 6))
       }
 
       setLoading(false)
@@ -343,6 +370,34 @@ export default function HomePage() {
                 <p className="text-sm text-gray-500">Upload a PDF and get a quiz</p>
               </div>
             </Link>
+
+            {deptShares.length > 0 && (
+              <div className="mb-8">
+                <h2 className="font-semibold text-foreground mb-1">Shared in your department</h2>
+                <p className="text-xs text-gray-500 mb-3">Add these courses — no need to re-upload.</p>
+                <div className="space-y-2">
+                  {deptShares.map((s) => (
+                    <Link
+                      key={s.code}
+                      href="/courses"
+                      className="flex items-center gap-3 p-3.5 rounded-2xl bg-white border border-border"
+                    >
+                      <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary font-bold text-xs">
+                        {s.code.split(" ")[0].slice(0, 4)}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold text-sm">{s.code}</p>
+                        <p className="text-xs text-gray-500 truncate">
+                          {s.title ? `${s.title} · ` : ""}
+                          {s.count} shared note{s.count === 1 ? "" : "s"}
+                        </p>
+                      </div>
+                      <span className="text-xs font-medium text-primary">View</span>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div>
               <div className="flex items-center justify-between mb-3">
