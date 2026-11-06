@@ -16,7 +16,8 @@ import {
   INSTITUTIONS,
   type InstitutionType,
 } from "@/lib/institutions"
-import { DEPARTMENTS, LEVELS } from "@/lib/departments"
+import { LEVELS, cleanDepartment } from "@/lib/departments"
+import { DepartmentField } from "@/components/department-field"
 
 const labelClass = "block text-sm font-medium text-foreground mb-1"
 
@@ -65,8 +66,10 @@ export default function SignUpPage() {
       setError("Please choose your school")
       return
     }
-    if (!form.department) {
-      setError("Please choose your department")
+    // Works for a department picked from the list and for one the student typed
+    const department = cleanDepartment(form.department)
+    if (!department) {
+      setError("Please choose or type your department")
       return
     }
     if (!form.level) {
@@ -99,7 +102,7 @@ export default function SignUpPage() {
             full_name: fullName,
             matric_number: form.matricNumber.trim(),
             institution: form.institution.trim(),
-            department: form.department,
+            department,
             level: form.level,
           },
         },
@@ -142,7 +145,7 @@ export default function SignUpPage() {
         full_name: fullName,
         matric_number: form.matricNumber.trim(),
         institution: form.institution.trim(),
-        department: form.department,
+        department,
         level: form.level,
         role: "student",
       })
@@ -284,17 +287,13 @@ export default function SignUpPage() {
 
           <div>
             <label htmlFor="department" className={labelClass}>Department</label>
-            <SearchableSelect
+            <DepartmentField
               id="department"
-              title="Choose your department"
               value={form.department}
               onChange={(v) => {
                 setForm({ ...form, department: v })
                 setError(null)
               }}
-              options={[...DEPARTMENTS]}
-              placeholder="Tap to choose"
-              searchPlaceholder="Search department"
             />
           </div>
 
