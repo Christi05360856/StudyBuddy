@@ -7,8 +7,8 @@ import { Plus, Loader2, ChevronRight, FileText, Flame, Calendar } from "lucide-r
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { computeStreak, daysUntil, lagosToday } from "@/lib/streak"
-import { DEPARTMENTS, LEVELS } from "@/lib/departments"
-import { SearchableSelect } from "@/components/ui/searchable-select"
+import { LEVELS, cleanDepartment } from "@/lib/departments"
+import { DepartmentField } from "@/components/department-field"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { HeadphonesButton } from "@/components/music/headphones-button"
@@ -86,9 +86,10 @@ export default function HomePage() {
       setStreak(computeStreak(days))
 
       // One-time prompt for existing users who signed up before department/level existed
-      if (profileRes.data && (!profileRes.data.department || !profileRes.data.level)) {
+      const savedDept = profileRes.data?.department === "Other" ? "" : profileRes.data?.department
+      if (profileRes.data && (!savedDept || !profileRes.data.level)) {
         setNeedsProfile(true)
-        setDept(profileRes.data.department ?? "")
+        setDept(savedDept ?? "")
         setLevel(profileRes.data.level ?? "")
       }
 
@@ -98,8 +99,9 @@ export default function HomePage() {
   }, [])
 
   const saveProfileExtras = async () => {
-    if (!dept || !level) {
-      setProfileError("Please choose both department and level.")
+    const department = cleanDepartment(dept)
+    if (!department || !level) {
+      setProfileError("Please choose or type your department, and choose your level.")
       return
     }
     setSavingProfile(true)
@@ -111,7 +113,7 @@ export default function HomePage() {
 
     const { error } = await supabase
       .from("profiles")
-      .update({ department: dept, level })
+      .update({ department, level })
       .eq("id", user.id)
 
     if (error) {
@@ -241,17 +243,13 @@ export default function HomePage() {
             <p className="text-sm font-medium text-foreground">
               Quick setup – tell us your department and level
             </p>
-            <SearchableSelect
+            <DepartmentField
               id="home-department"
-              title="Choose your department"
               value={dept}
               onChange={(v) => {
                 setDept(v)
                 setProfileError(null)
               }}
-              options={[...DEPARTMENTS]}
-              placeholder="Department"
-              searchPlaceholder="Search department"
             />
             <div className="grid grid-cols-3 gap-2">
               {LEVELS.map((lvl) => (
