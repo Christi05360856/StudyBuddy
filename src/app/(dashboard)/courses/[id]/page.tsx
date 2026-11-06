@@ -16,8 +16,10 @@ import {
   Trash2,
   Layers,
   Calendar,
+  Share2,
 } from "lucide-react"
 import { toTitleCase, isValidTitle } from "@/lib/course-code"
+import { makeContentKey, type SharedMaterialRow } from "@/lib/share"
 import { HeadphonesButton } from "@/components/music/headphones-button"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
@@ -111,6 +113,19 @@ export default function CourseDetailPage() {
   const [metaError, setMetaError] = useState<string | null>(null)
   const [showMeta, setShowMeta] = useState(false)
 
+  // Department share
+  const [profileInst, setProfileInst] = useState("")
+  const [profileDept, setProfileDept] = useState("")
+  const [profileName, setProfileName] = useState("")
+  const [deptShared, setDeptShared] = useState<SharedMaterialRow[]>([])
+  const [addedSharedIds, setAddedSharedIds] = useState<Set<string>>(new Set())
+  const [mySharedMaterialIds, setMySharedMaterialIds] = useState<Set<string>>(new Set())
+  const [shareTarget, setShareTarget] = useState<Material | null>(null)
+  const [shareChecked, setShareChecked] = useState(false)
+  const [sharing, setSharing] = useState(false)
+  const [shareMsg, setShareMsg] = useState<string | null>(null)
+  const [blockedShare, setBlockedShare] = useState<SharedMaterialRow | null>(null)
+
   const supabase = createClient()
 
   // Gets the course and its notes from the database.
@@ -154,6 +169,50 @@ export default function CourseDetailPage() {
     if (matsError) ({ data: mats } = await loadMaterials(baseColumns))
 
     if (mats) setMaterials(mats as unknown as Material[])
+
+    // Profile + department shared notes for this course code
+    const { data: prof } = await supabase
+      .from("profiles")
+      .select("full_name, institution, department")
+      .eq("id", user.id)
+      .single()
+
+    if (prof) {
+      setProfileName(prof.full_name || "")
+      setProfileInst(prof.institution || "")
+      setProfileDept(prof.department || "")
+    }
+
+    const codeNorm = courseData
+      ? (courseData as { code: string }).code.replace(/\s+/g, "").toUpperCase()
+      : ""
+
+    if (prof?.institution && prof?.department && codeNorm) {
+      const { data: shared } = await supabase
+        .from("shared_materials")
+        .select("*")
+        .eq("institution", prof.institution)
+        .eq("department", prof.department)
+        .eq("code_normalized", codeNorm)
+        .order("created_at", { ascending: false })
+
+      setDeptShared((shared as SharedMaterialRow[]) || [])
+
+      const { data: added } = await supabase
+        .from("added_shared_materials")
+        .select("shared_material_id")
+        .eq("user_id", user.id)
+
+      setAddedSharedIds(new Set((added || []).map((a: { shared_material_id: string }) => a.shared_material_id)))
+
+      const { data: mine } = await supabase
+        .from("shared_materials")
+        .select("material_id")
+        .eq("user_id", user.id)
+
+      setMySharedMaterialIds(new Set((mine || []).map((r: { material_id: string }) => r.material_id)))
+    }
+
     setLoading(false)
   }
 
@@ -211,6 +270,31 @@ export default function CourseDetailPage() {
         : label === "Other"
           ? pendingFile.name
           : `${label} – ${stripExtension(pendingFile.name)}`
+
+    // Hard block if this note is already shared in the department (saves AI tokens)
+    if (course && profileInst && profileDept) {
+      const codeNorm = course.code.replace(/\s+/g, "").toUpperCase()
+      const key = makeContentKey({
+        codeNormalized: codeNorm,
+        materialTitle: finalTitle,
+        fileSize: pendingFile.size,
+      })
+      const { data: existing } = await supabase
+        .from("shared_materials")
+        .select("*")
+        .eq("institution", profileInst)
+        .eq("department", profileDept)
+        .eq("code_normalized", codeNorm)
+        .eq("content_key", key)
+        .maybeSingle()
+
+      if (existing) {
+        setBlockedShare(existing as SharedMaterialRow)
+        setShowLabelModal(false)
+        setPendingFile(null)
+        return
+      }
+    }
 
     setShowLabelModal(false)
     setUploading(true)
@@ -372,6 +456,88 @@ export default function CourseDetailPage() {
     })
     setShowMeta(false)
     setSavingMeta(false)
+  }
+
+  const shareMaterial = async () => {
+    if (!shareTarget || !course || !shareChecked || !profileInst || !profileDept) return
+    setSharing(true)
+    setShareMsg(null)
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user) {
+      setSharing(false)
+      return
+    }
+
+    const codeNorm = course.code.replace(/\s+/g, "").toUpperCase()
+    const key = makeContentKey({
+      codeNormalized: codeNorm,
+      materialTitle: shareTarget.title,
+      fileSize: null,
+    })
+
+    // Prefer size from DB if we can
+    const { data: matRow } = await supabase
+      .from("materials")
+      .select("file_size")
+      .eq("id", shareTarget.id)
+      .single()
+
+    const contentKey = makeContentKey({
+      codeNormalized: codeNorm,
+      materialTitle: shareTarget.title,
+      fileSize: matRow?.file_size ?? null,
+    })
+
+    const { error } = await supabase.from("shared_materials").insert({
+      material_id: shareTarget.id,
+      user_id: user.id,
+      institution: profileInst,
+      department: profileDept,
+      code_normalized: codeNorm,
+      course_code: course.code,
+      course_title: course.title,
+      material_title: shareTarget.title,
+      file_size: matRow?.file_size ?? null,
+      content_key: contentKey,
+      sharer_name: profileName.split(" ")[0] || "A student",
+    })
+
+    if (error) {
+      if (error.code === "23505") {
+        setShareMsg("Already shared for this course in your department.")
+      } else {
+        setShareMsg(error.message || "Could not share. Try again.")
+      }
+      setSharing(false)
+      return
+    }
+
+    setMySharedMaterialIds((prev) => new Set(prev).add(shareTarget.id))
+    setShareTarget(null)
+    setShareChecked(false)
+    setSharing(false)
+    await load()
+  }
+
+  const addSharedNote = async (row: SharedMaterialRow) => {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user || !course) return
+
+    const { error } = await supabase.from("added_shared_materials").insert({
+      user_id: user.id,
+      shared_material_id: row.id,
+      course_id: course.id,
+    })
+    if (error && error.code !== "23505") {
+      setErrorMsg("Could not add this note. Try again.")
+      return
+    }
+    setAddedSharedIds((prev) => new Set(prev).add(row.id))
+    setBlockedShare(null)
   }
 
   // How many questions a note really has
@@ -592,6 +758,24 @@ export default function CourseDetailPage() {
                       </Button>
                     </Link>
                   )}
+                  {m.status === "ready" && !noQuestions(m) && profileDept && (
+                    mySharedMaterialIds.has(m.id) ? (
+                      <span className="text-[11px] text-success font-medium px-1">Shared</span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShareTarget(m)
+                          setShareChecked(false)
+                          setShareMsg(null)
+                        }}
+                        className="h-9 w-9 shrink-0 rounded-xl border border-border text-gray-400 flex items-center justify-center hover:text-primary hover:border-primary/40"
+                        aria-label="Share with department"
+                      >
+                        <Share2 size={16} />
+                      </button>
+                    )
+                  )}
                   {needsRetry(m) && (
                     <Button
                       size="sm"
@@ -612,31 +796,84 @@ export default function CourseDetailPage() {
                 </div>
               </div>
             ))}
+
+            {/* Notes already shared in this department for this course */}
+            {deptShared.length > 0 && (
+              <div className="pt-4 space-y-3">
+                <h3 className="text-sm font-semibold text-foreground">From your department</h3>
+                <p className="text-xs text-gray-500">Shared notes for {course?.code}. Add them — no AI cost.</p>
+                {deptShared.map((row) => {
+                  const added = addedSharedIds.has(row.id)
+                  const mine = row.user_id && mySharedMaterialIds.has(row.material_id)
+                  return (
+                    <div key={row.id} className="p-4 rounded-2xl bg-card border border-border space-y-2">
+                      <p className="font-medium truncate">{row.material_title}</p>
+                      <p className="text-xs text-gray-500">Shared by {row.sharer_name}</p>
+                      <div className="flex gap-2">
+                        {added || mine ? (
+                          <>
+                            <Link href={`/quiz?material=${row.material_id}&type=test`} className="flex-1">
+                              <Button size="sm" className="w-full text-xs h-9">Quiz</Button>
+                            </Link>
+                            <Link href={`/flashcards?material=${row.material_id}&course=${courseId}`} className="flex-1">
+                              <Button size="sm" variant="outline" className="w-full text-xs h-9">Cards</Button>
+                            </Link>
+                          </>
+                        ) : (
+                          <Button size="sm" className="flex-1 text-xs h-9" onClick={() => addSharedNote(row)}>
+                            Add note
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
           </div>
         )}
 
         {tab === "quizzes" && (
           <div className="space-y-4">
-            {materials.filter((m) => m.status === "ready" && !noQuestions(m)).length === 0 ? (
+            {materials.filter((m) => m.status === "ready" && !noQuestions(m)).length === 0 &&
+            deptShared.filter((r) => addedSharedIds.has(r.id) || mySharedMaterialIds.has(r.material_id)).length === 0 ? (
               <p className="text-center text-gray-500 py-8">
                 No quizzes ready yet. Upload notes first.
               </p>
             ) : (
-              materials
-                .filter((m) => m.status === "ready" && !noQuestions(m))
-                .map((m) => (
-                  <div key={m.id} className="p-4 rounded-2xl bg-card border border-border space-y-3">
-                    <p className="font-medium truncate">{m.title}</p>
-                    <div className="flex gap-2">
-                      <Link href={`/quiz?material=${m.id}&type=test`} className="flex-1">
-                        <Button className="w-full" size="sm">Test · {Math.min(30, questionCount(m))}Q</Button>
-                      </Link>
-                      <Link href={`/quiz?material=${m.id}&type=exam`} className="flex-1">
-                        <Button variant="outline" className="w-full" size="sm">Exam · {Math.min(50, questionCount(m))}Q</Button>
-                      </Link>
+              <>
+                {materials
+                  .filter((m) => m.status === "ready" && !noQuestions(m))
+                  .map((m) => (
+                    <div key={m.id} className="p-4 rounded-2xl bg-card border border-border space-y-3">
+                      <p className="font-medium truncate">{m.title}</p>
+                      <div className="flex gap-2">
+                        <Link href={`/quiz?material=${m.id}&type=test`} className="flex-1">
+                          <Button className="w-full" size="sm">Test · {Math.min(30, questionCount(m))}Q</Button>
+                        </Link>
+                        <Link href={`/quiz?material=${m.id}&type=exam`} className="flex-1">
+                          <Button variant="outline" className="w-full" size="sm">Exam · {Math.min(50, questionCount(m))}Q</Button>
+                        </Link>
+                      </div>
                     </div>
-                  </div>
-                ))
+                  ))}
+                {deptShared
+                  .filter((r) => addedSharedIds.has(r.id) || mySharedMaterialIds.has(r.material_id))
+                  .map((r) => (
+                    <div key={r.id} className="p-4 rounded-2xl bg-card border border-border space-y-3">
+                      <p className="font-medium truncate">{r.material_title}</p>
+                      <p className="text-xs text-gray-500">Shared by {r.sharer_name}</p>
+                      <div className="flex gap-2">
+                        <Link href={`/quiz?material=${r.material_id}&type=test`} className="flex-1">
+                          <Button className="w-full" size="sm">Test</Button>
+                        </Link>
+                        <Link href={`/quiz?material=${r.material_id}&type=exam`} className="flex-1">
+                          <Button variant="outline" className="w-full" size="sm">Exam</Button>
+                        </Link>
+                      </div>
+                    </div>
+                  ))}
+              </>
             )}
           </div>
         )}
@@ -782,7 +1019,77 @@ export default function CourseDetailPage() {
         </div>
       )}
 
+
+      {/* Blocked duplicate upload */}
+      {blockedShare && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-4">
+          <div className="bg-card rounded-2xl w-full max-w-md p-6 space-y-4">
+            <h2 className="text-lg font-semibold">Already shared</h2>
+            <p className="text-sm text-gray-500">
+              {course?.code} notes like this are already shared in your department by{" "}
+              <span className="font-medium text-foreground">{blockedShare.sharer_name}</span>.
+              Add them instead — no AI use.
+            </p>
+            <div className="flex gap-3">
+              <Button variant="secondary" className="flex-1" onClick={() => setBlockedShare(null)}>
+                Close
+              </Button>
+              <Button
+                className="flex-1"
+                onClick={() => addSharedNote(blockedShare)}
+              >
+                Add shared
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Share with department */}
+      {shareTarget && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-4">
+          <div className="bg-card rounded-2xl w-full max-w-md p-6 space-y-4">
+            <h2 className="text-lg font-semibold">Share with department</h2>
+            <p className="text-sm text-gray-500 break-words">{shareTarget.title}</p>
+            <label className="flex items-start gap-3 text-sm cursor-pointer">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={shareChecked}
+                onChange={(e) => setShareChecked(e.target.checked)}
+              />
+              <span>
+                This is general class material for{" "}
+                <strong>{profileDept || "my department"}</strong> at{" "}
+                <strong>{profileInst || "my school"}</strong> — not private notes.
+              </span>
+            </label>
+            {shareMsg && <p className="text-sm text-danger">{shareMsg}</p>}
+            <div className="flex gap-3">
+              <Button
+                variant="secondary"
+                className="flex-1"
+                onClick={() => {
+                  setShareTarget(null)
+                  setShareChecked(false)
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="flex-1"
+                disabled={!shareChecked || sharing}
+                onClick={shareMaterial}
+              >
+                {sharing ? "Sharing..." : "Share"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <BottomNav />
     </div>
   )
 }
+
