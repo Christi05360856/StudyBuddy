@@ -49,6 +49,7 @@ interface Course {
   code: string
   title: string | null
   assessment_date: string | null
+  assessment_type: string | null
 }
 
 const LECTURE_OPTIONS = [
@@ -105,6 +106,7 @@ export default function CourseDetailPage() {
   // Title + assessment date editing
   const [editTitle, setEditTitle] = useState("")
   const [editDate, setEditDate] = useState("")
+  const [editType, setEditType] = useState("Test")
   const [savingMeta, setSavingMeta] = useState(false)
   const [metaError, setMetaError] = useState<string | null>(null)
   const [showMeta, setShowMeta] = useState(false)
@@ -125,7 +127,7 @@ export default function CourseDetailPage() {
 
     const { data: courseData } = await supabase
       .from("courses")
-      .select("id, code, title, assessment_date")
+      .select("id, code, title, assessment_date, assessment_type")
       .eq("id", courseId)
       .eq("user_id", user.id)
       .single()
@@ -134,6 +136,7 @@ export default function CourseDetailPage() {
       setCourse(courseData)
       setEditTitle(courseData.title ?? "")
       setEditDate(courseData.assessment_date ?? "")
+      setEditType(courseData.assessment_type ?? "Test")
     }
 
     const baseColumns = "id, title, page_count, status, file_path, created_at, topics, questions(count)"
@@ -353,6 +356,7 @@ export default function CourseDetailPage() {
       .update({
         title: cleanTitle,
         assessment_date: editDate || null,
+        assessment_type: editDate ? editType : null,
       })
       .eq("id", course.id)
     if (error) {
@@ -360,7 +364,12 @@ export default function CourseDetailPage() {
       setSavingMeta(false)
       return
     }
-    setCourse({ ...course, title: cleanTitle, assessment_date: editDate || null })
+    setCourse({
+      ...course,
+      title: cleanTitle,
+      assessment_date: editDate || null,
+      assessment_type: editDate ? editType : null,
+    })
     setShowMeta(false)
     setSavingMeta(false)
   }
@@ -703,15 +712,32 @@ export default function CourseDetailPage() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">Test / CAT / Exam date</label>
+              <label className="block text-sm font-medium mb-1">Assessment type</label>
+              <div className="grid grid-cols-3 gap-2">
+                {(["Test", "Exam", "CAT"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setEditType(t)}
+                    className={
+                      "min-h-10 rounded-xl border text-sm font-medium transition-colors " +
+                      (editType === t
+                        ? "bg-primary text-white border-primary"
+                        : "bg-card border-border text-foreground")
+                    }
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Date</label>
               <Input
                 type="date"
                 value={editDate}
                 onChange={(e) => setEditDate(e.target.value)}
               />
-              <p className="text-xs text-gray-400 mt-1">
-                Optional. Different schools call it Test, CAT, In-course or Exam.
-              </p>
             </div>
             {metaError && <p className="text-sm text-danger">{metaError}</p>}
             <div className="flex gap-3 pt-2">
