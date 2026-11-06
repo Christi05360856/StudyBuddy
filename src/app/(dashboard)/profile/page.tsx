@@ -8,8 +8,8 @@ import { BottomNav } from "@/components/bottom-nav"
 import { Button } from "@/components/ui/button"
 import { createClient } from "@/lib/supabase/client"
 import { APP_VERSION } from "@/lib/app-info"
-import { DEPARTMENTS, LEVELS } from "@/lib/departments"
-import { SearchableSelect } from "@/components/ui/searchable-select"
+import { LEVELS, cleanDepartment } from "@/lib/departments"
+import { DepartmentField } from "@/components/department-field"
 import { cn } from "@/lib/utils"
 import { ThemeToggle } from "@/components/theme-toggle"
 
@@ -72,8 +72,10 @@ export default function ProfilePage() {
         .single()
 
       if (data) {
-        setProfile(data)
-        setDept(data.department ?? "")
+        // Older accounts may have "Other" saved: treat it as not set so they can enter the real one
+        const savedDept = data.department === "Other" ? null : data.department
+        setProfile({ ...data, department: savedDept })
+        setDept(savedDept ?? "")
         setLevel(data.level ?? "")
       }
       setLoading(false)
@@ -89,8 +91,9 @@ export default function ProfilePage() {
   }
 
   const saveExtras = async () => {
-    if (!dept || !level) {
-      setEditError("Please choose both department and level.")
+    const department = cleanDepartment(dept)
+    if (!department || !level) {
+      setEditError("Please choose or type your department, and choose your level.")
       return
     }
     setSaving(true)
@@ -102,7 +105,7 @@ export default function ProfilePage() {
 
     const { error } = await supabase
       .from("profiles")
-      .update({ department: dept, level })
+      .update({ department, level })
       .eq("id", user.id)
 
     if (error) {
@@ -111,7 +114,7 @@ export default function ProfilePage() {
       return
     }
 
-    setProfile((p) => (p ? { ...p, department: dept, level } : p))
+    setProfile((p) => (p ? { ...p, department, level } : p))
     setEditing(false)
     setSaving(false)
   }
@@ -170,17 +173,13 @@ export default function ProfilePage() {
                 <p className="text-sm font-medium">
                   {profile.department && profile.level ? "Update department & level" : "Add department & level"}
                 </p>
-                <SearchableSelect
+                <DepartmentField
                   id="profile-department"
-                  title="Choose your department"
                   value={dept}
                   onChange={(v) => {
                     setDept(v)
                     setEditError(null)
                   }}
-                  options={[...DEPARTMENTS]}
-                  placeholder="Department"
-                  searchPlaceholder="Search department"
                 />
                 <div className="grid grid-cols-3 gap-2">
                   {LEVELS.map((lvl) => (
