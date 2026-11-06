@@ -1,9 +1,9 @@
 // PATH: src/app/(dashboard)/flashcards/page.tsx
 "use client"
 
-import { Suspense, useEffect, useMemo, useState } from "react"
+import { Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
-import { ArrowLeft, Loader2, RotateCcw } from "lucide-react"
+import { ArrowLeft, Loader2, RotateCcw, Check, Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { BottomNav } from "@/components/bottom-nav"
 import { createClient } from "@/lib/supabase/client"
@@ -31,12 +31,14 @@ function FlashcardsContent() {
   const courseId = searchParams.get("course") || ""
 
   const [loading, setLoading] = useState(true)
-  const [cards, setCards] = useState<Card[]>([])
-  const [progress, setProgress] = useState<Record<string, Progress>>({})
+  const [materialTitle, setMaterialTitle] = useState("")
+  // Session deck is frozen once built — progress updates must NOT reshuffle it
+  const [session, setSession] = useState<Card[]>([])
   const [index, setIndex] = useState(0)
   const [flipped, setFlipped] = useState(false)
   const [done, setDone] = useState(false)
-  const [materialTitle, setMaterialTitle] = useState("")
+  const [busy, setBusy] = useState(false)
+  const transitioning = useRef(false)
 
   useEffect(() => {
     if (!materialId) {
@@ -44,11 +46,13 @@ function FlashcardsContent() {
       return
     }
 
+    let cancelled = false
+
     const load = async () => {
       const {
         data: { user },
       } = await supabase.auth.getUser()
-      if (!user) {
+      if (!user || cancelled) {
         setLoading(false)
         return
       }
@@ -62,6 +66,8 @@ function FlashcardsContent() {
           .order("created_at", { ascending: true }),
         supabase.from("flashcard_progress").select("card_key, box, due_date").eq("user_id", user.id),
       ])
+
+      if (cancelled) return
 
       if (matRes.data?.title) setMaterialTitle(matRes.data.title)
 
@@ -77,31 +83,33 @@ function FlashcardsContent() {
         }
       })
 
-      setCards(built)
-
-      const map: Record<string, Progress> = {}
+      const progressMap: Record<string, Progress> = {}
       ;(progRes.data ?? []).forEach((p) => {
-        map[p.card_key] = { box: p.box, due_date: p.due_date }
+        progressMap[p.card_key] = { box: p.box, due_date: p.due_date }
       })
-      setProgress(map)
+
+      const today = lagosToday()
+      const due = built.filter((c) => {
+        const p = progressMap[c.key]
+        if (!p) return true
+        return p.due_date <= today
+      })
+      setSession(due.length > 0 ? due : built)
+      setIndex(0)
+      setFlipped(false)
+      setDone(false)
       setLoading(false)
     }
 
     load()
+    return () => {
+      cancelled = true
+    }
   }, [materialId])
 
-  // Prefer due cards, otherwise all cards in order
-  const dueCards = useMemo(() => {
-    const today = lagosToday()
-    const due = cards.filter((c) => {
-      const p = progress[c.key]
-      if (!p) return true
-      return p.due_date <= today
-    })
-    return due.length > 0 ? due : cards
-  }, [cards, progress])
-
-  const current = dueCards[index] ?? null
+  const current = session[index] ?? null
+  const total = session.length
+  const progressPct = total > 0 ? Math.round(((index + (flipped ? 0.5 : 0)) / total) * 100) : 0
 
   const recordStudyDay = async () => {
     try {
@@ -111,44 +119,59 @@ function FlashcardsContent() {
     }
   }
 
-  const answer = async (gotIt: boolean) => {
-    if (!current) return
-
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) return
-
-    const prev = progress[current.key]
-    const nextBox = gotIt ? Math.min(5, (prev?.box ?? 1) + 1) : 1
-    // Simple spaced intervals: 0, 1, 3, 7, 14 days
-    const intervals = [0, 1, 3, 7, 14]
-    const daysAhead = intervals[nextBox - 1] ?? 14
-    const due = new Date()
-    due.setDate(due.getDate() + daysAhead)
-    const dueStr = due.toLocaleDateString("en-CA", { timeZone: "Africa/Lagos" })
-
-    await supabase.from("flashcard_progress").upsert({
-      user_id: user.id,
-      card_key: current.key,
-      box: nextBox,
-      due_date: dueStr,
-    })
-
-    setProgress((p) => ({
-      ...p,
-      [current.key]: { box: nextBox, due_date: dueStr },
-    }))
-
-    // Count this review toward the streak
-    await recordStudyDay()
-
+  const goNext = useCallback(() => {
     setFlipped(false)
-    if (index + 1 >= dueCards.length) {
+    transitioning.current = false
+    if (index + 1 >= session.length) {
       setDone(true)
     } else {
       setIndex((i) => i + 1)
     }
+  }, [index, session.length])
+
+  const answer = async (gotIt: boolean) => {
+    if (!current || busy || transitioning.current) return
+    setBusy(true)
+    transitioning.current = true
+    setFlipped(false)
+
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+      if (user) {
+        const { data: prevRow } = await supabase
+          .from("flashcard_progress")
+          .select("box")
+          .eq("user_id", user.id)
+          .eq("card_key", current.key)
+          .maybeSingle()
+
+        const prevBox = prevRow?.box ?? 1
+        const nextBox = gotIt ? Math.min(5, prevBox + 1) : 1
+        const intervals = [0, 1, 3, 7, 14]
+        const daysAhead = intervals[nextBox - 1] ?? 14
+        const due = new Date()
+        due.setDate(due.getDate() + daysAhead)
+        const dueStr = due.toLocaleDateString("en-CA", { timeZone: "Africa/Lagos" })
+
+        await supabase.from("flashcard_progress").upsert({
+          user_id: user.id,
+          card_key: current.key,
+          box: nextBox,
+          due_date: dueStr,
+        })
+
+        await recordStudyDay()
+      }
+    } catch (err) {
+      console.error("flashcard progress save:", err)
+    }
+
+    requestAnimationFrame(() => {
+      goNext()
+      setBusy(false)
+    })
   }
 
   if (loading) {
@@ -159,11 +182,15 @@ function FlashcardsContent() {
     )
   }
 
-  if (!materialId || cards.length === 0) {
+  if (!materialId || session.length === 0) {
     return (
       <div className="min-h-screen pb-24">
         <div className="max-w-lg mx-auto px-5 pt-6">
-          <button onClick={() => router.back()} className="p-2 -ml-2 rounded-full hover:bg-muted mb-4">
+          <button
+            onClick={() => router.back()}
+            className="p-2 -ml-2 rounded-full hover:bg-muted mb-4"
+            aria-label="Go back"
+          >
             <ArrowLeft size={20} />
           </button>
           <p className="text-center text-gray-500 py-16">
@@ -178,19 +205,29 @@ function FlashcardsContent() {
   if (done) {
     return (
       <div className="min-h-screen pb-24">
-        <div className="max-w-lg mx-auto px-5 pt-6 text-center">
-          <button onClick={() => router.back()} className="p-2 -ml-2 rounded-full hover:bg-muted mb-8 self-start">
+        <div className="max-w-lg mx-auto px-5 pt-6">
+          <button
+            onClick={() => router.back()}
+            className="p-2 -ml-2 rounded-full hover:bg-muted mb-6"
+            aria-label="Go back"
+          >
             <ArrowLeft size={20} />
           </button>
-          <div className="py-16 space-y-4">
+          <div className="text-center py-12 space-y-4">
+            <div className="mx-auto w-16 h-16 rounded-full bg-primary/15 flex items-center justify-center">
+              <Sparkles className="text-primary" size={28} />
+            </div>
             <p className="text-2xl font-bold">Nice work</p>
-            <p className="text-gray-500">You reviewed {dueCards.length} card{dueCards.length === 1 ? "" : "s"}.</p>
+            <p className="text-gray-500">
+              You reviewed {total} card{total === 1 ? "" : "s"}.
+            </p>
             <div className="flex flex-col gap-3 max-w-xs mx-auto pt-4">
               <Button
                 onClick={() => {
                   setIndex(0)
                   setDone(false)
                   setFlipped(false)
+                  transitioning.current = false
                 }}
               >
                 Review again
@@ -211,58 +248,126 @@ function FlashcardsContent() {
   return (
     <div className="min-h-screen pb-24">
       <div className="max-w-lg mx-auto px-5 pt-6">
-        <div className="flex items-center gap-3 mb-2">
-          <button onClick={() => router.back()} className="p-2 -ml-2 rounded-full hover:bg-muted">
+        {/* Header */}
+        <div className="flex items-center gap-3 mb-3">
+          <button
+            onClick={() => router.back()}
+            className="p-2 -ml-2 rounded-full hover:bg-muted"
+            aria-label="Go back"
+          >
             <ArrowLeft size={20} />
           </button>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="text-sm text-gray-500">Flashcards</p>
             <h1 className="text-lg font-bold truncate">{materialTitle || "Review"}</h1>
           </div>
+          <p className="text-sm font-semibold text-primary tabular-nums shrink-0">
+            {index + 1}/{total}
+          </p>
         </div>
 
-        <p className="text-sm text-gray-500 mb-4">
-          {index + 1} of {dueCards.length}
-        </p>
+        {/* Progress bar — primary brand colour */}
+        <div className="h-1.5 rounded-full bg-primary/15 mb-6 overflow-hidden">
+          <div
+            className="h-full rounded-full bg-primary transition-all duration-300 ease-out"
+            style={{ width: `${Math.max(progressPct, 4)}%` }}
+          />
+        </div>
 
-        {/* Card */}
+        {/* Themed flashcard */}
         <button
           type="button"
-          onClick={() => setFlipped((f) => !f)}
+          key={current?.key}
+          onClick={() => {
+            if (!busy && !transitioning.current) setFlipped((f) => !f)
+          }}
           className={cn(
-            "w-full min-h-[240px] rounded-2xl border border-border bg-card p-6 text-left transition-colors",
-            "flex flex-col justify-center gap-3 active:scale-[0.99]"
+            "group relative w-full min-h-[300px] rounded-3xl p-6 text-left",
+            "flex flex-col justify-center gap-4",
+            "shadow-md transition-all duration-200",
+            "active:scale-[0.985] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50",
+            flipped
+              ? // Answer side — soft primary wash
+                "bg-primary text-white border border-primary shadow-primary/20"
+              : // Question side — card surface with primary accent strip
+                "bg-card border border-border"
           )}
         >
-          <p className="text-xs font-medium text-primary uppercase tracking-wide">
-            {flipped ? "Answer" : "Question"}
-          </p>
-          <p className="text-base font-medium text-foreground whitespace-pre-wrap">
+          {/* Top accent (question side only) */}
+          {!flipped && (
+            <div
+              className="absolute top-0 left-6 right-6 h-1 rounded-b-full bg-primary/80"
+              aria-hidden
+            />
+          )}
+
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <span
+              className={cn(
+                "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide",
+                flipped ? "bg-white/20 text-white" : "bg-primary/10 text-primary"
+              )}
+            >
+              {flipped ? "Answer" : "Question"}
+            </span>
+            {current?.topic && (
+              <span
+                className={cn(
+                  "text-xs truncate max-w-[55%]",
+                  flipped ? "text-white/70" : "text-gray-400"
+                )}
+              >
+                {current.topic}
+              </span>
+            )}
+          </div>
+
+          <p
+            className={cn(
+              "text-[1.05rem] font-medium whitespace-pre-wrap leading-relaxed",
+              flipped ? "text-white" : "text-foreground"
+            )}
+          >
             {flipped ? current?.back : current?.front}
           </p>
-          {current?.topic && !flipped && (
-            <p className="text-xs text-gray-400 mt-2">Topic: {current.topic}</p>
-          )}
-          <p className="text-xs text-gray-400 mt-auto pt-4">
-            {flipped ? "Tap for question" : "Tap to reveal answer"}
+
+          <p
+            className={cn(
+              "text-xs mt-auto pt-4",
+              flipped ? "text-white/60" : "text-gray-400"
+            )}
+          >
+            {flipped ? "Tap to see the question again" : "Tap to reveal the answer"}
           </p>
         </button>
 
-        {/* Actions – only after flip so the student sees the answer first */}
+        {/* Actions */}
         {flipped && (
           <div className="flex gap-3 mt-6">
             <Button
               variant="secondary"
-              className="flex-1 gap-2"
+              className="flex-1 gap-2 h-12 rounded-xl"
+              disabled={busy}
               onClick={() => answer(false)}
             >
               <RotateCcw size={16} />
               Again
             </Button>
-            <Button className="flex-1" onClick={() => answer(true)}>
+            <Button
+              className="flex-1 gap-2 h-12 rounded-xl"
+              disabled={busy}
+              onClick={() => answer(true)}
+            >
+              <Check size={16} />
               Got it
             </Button>
           </div>
+        )}
+
+        {!flipped && (
+          <p className="text-center text-xs text-gray-400 mt-6">
+            Reveal the answer, then mark whether you knew it.
+          </p>
         )}
       </div>
 
