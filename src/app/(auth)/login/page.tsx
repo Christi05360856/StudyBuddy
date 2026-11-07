@@ -2,170 +2,68 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import Link from "next/link"
-import { useRouter } from "next/navigation"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { PasswordInput } from "@/components/ui/password-input"
 import { AuthShell } from "@/components/auth-shell"
-
-const labelClass = "block text-sm font-medium text-foreground mb-1"
 
 // Only allow going to a page inside our own app (stops "log in then jump to another website" tricks)
 function safeNext(raw: string | null): string {
   return raw && raw.startsWith("/") && !raw.startsWith("//") ? raw : "/home"
 }
 
+function GoogleLogo() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden>
+      <path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.9 2.4 30.4 0 24 0 14.6 0 6.5 5.4 2.6 13.2l7.9 6.1C12.4 13.6 17.7 9.5 24 9.5z" />
+      <path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.6 5.9c4.4-4.1 7-10.1 7-17.6z" />
+      <path fill="#FBBC05" d="M10.5 28.7c-.5-1.4-.8-3-.8-4.7s.3-3.2.8-4.7l-7.9-6.1C.9 16.4 0 20.1 0 24s.9 7.6 2.6 10.8l7.9-6.1z" />
+      <path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.6-5.9c-2.1 1.4-4.9 2.3-8.3 2.3-6.3 0-11.6-4.1-13.5-9.8l-7.9 6.1C6.5 42.6 14.6 48 24 48z" />
+    </svg>
+  )
+}
+
 export default function LoginPage() {
-  const router = useRouter()
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
-  const [unconfirmed, setUnconfirmed] = useState(false)
-  const [resending, setResending] = useState(false)
   const [next, setNext] = useState("/home")
 
-  // Read ?next=... and ?error=link from the address bar
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     setNext(safeNext(params.get("next")))
-    if (params.get("error") === "link") {
-      setError("That confirmation link has expired or was already used. Log in below and we can send a new one.")
+    if (params.get("error")) {
+      setError("We could not sign you in with Google. Please try again.")
     }
   }, [])
 
-  const [form, setForm] = useState({
-    email: "",
-    password: "",
-  })
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setForm({ ...form, [e.target.name]: e.target.value })
-    setError(null)
-  }
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError(null)
-    setNotice(null)
-    setUnconfirmed(false)
+  const continueWithGoogle = async () => {
     setLoading(true)
-
-    const supabase = createClient()
-
-    try {
-      const { data, error: authError } = await supabase.auth.signInWithPassword({
-        email: form.email.trim().toLowerCase(),
-        password: form.password,
-      })
-
-      if (authError) {
-        // Tell the student when the real problem is an unconfirmed email
-        if (authError.message.toLowerCase().includes("not confirmed")) {
-          setUnconfirmed(true)
-          throw new Error("Please confirm your email first. Open the link we sent to your inbox (check spam too).")
-        }
-        if (authError.status === 429 || authError.message.toLowerCase().includes("rate limit")) {
-          throw new Error("Too many attempts. Please wait a few minutes and try again.")
-        }
-        throw new Error("Invalid email or password")
-      }
-
-      // Every account must have a profile (name, school, matric number).
-      // Accounts from a sign up that stopped half way may be missing it, so we repair it here.
-      const user = data.user
-      const { data: profile } = await supabase.from("profiles").select("id").eq("id", user.id).maybeSingle()
-
-      if (!profile) {
-        const meta = user.user_metadata ?? {}
-        const { error: profileError } = await supabase.from("profiles").upsert({
-          id: user.id,
-          full_name: meta.full_name ?? "",
-          matric_number: meta.matric_number ?? "",
-          institution: meta.institution ?? "",
-          department: meta.department ?? null,
-          level: meta.level ?? null,
-          role: "student",
-        })
-
-        if (profileError) {
-          await supabase.auth.signOut()
-          throw new Error(
-            profileError.code === "23505"
-              ? "This matric number is already registered to another account."
-              : "We could not finish setting up your account. Please try again."
-          )
-        }
-      }
-
-      router.push(next)
-      router.refresh()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong")
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const resendConfirmation = async () => {
-    setResending(true)
     setError(null)
     const supabase = createClient()
-    const { error: resendError } = await supabase.auth.resend({
-      type: "signup",
-      email: form.email.trim().toLowerCase(),
-      options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=/home` },
+    const { error: oauthError } = await supabase.auth.signInWithOAuth({
+      provider: "google",
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`,
+        // Always let the student pick the account (many share phones)
+        queryParams: { prompt: "select_account" },
+      },
     })
-    setResending(false)
-    if (resendError) {
-      setError("Could not send the email right now. Please wait a few minutes and try again.")
-    } else {
-      setNotice("Done. A new confirmation link is on its way.")
+    // On success the browser leaves this page, so we only handle the failure case
+    if (oauthError) {
+      setError("Could not reach Google right now. Please try again.")
+      setLoading(false)
     }
   }
 
   return (
     <AuthShell
-      active="login"
-      headline="Welcome back. Pick up where you stopped."
-      subtext="Your notes, quizzes and tutor are waiting."
-      heading="Log in to your account"
+      headline="Turn your class notes into practice questions."
+      subtext="Upload a lecture PDF. Get a timed quiz and a tutor that explains in simple words."
+      heading="Welcome to StudyBuddy"
     >
-      <form onSubmit={handleSubmit} className="space-y-4">
-        <div>
-          <label htmlFor="email" className={labelClass}>Email address</label>
-          <Input
-            id="email"
-            name="email"
-            type="email"
-            placeholder="you@example.com"
-            value={form.email}
-            onChange={handleChange}
-            required
-            autoComplete="email"
-          />
-        </div>
-
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <label htmlFor="password" className="block text-sm font-medium text-foreground">
-              Password
-            </label>
-            <Link href="/forgot-password" className="text-sm text-primary font-medium">
-              Forgot password?
-            </Link>
-          </div>
-          <PasswordInput
-            id="password"
-            name="password"
-            placeholder="Your password"
-            value={form.password}
-            onChange={handleChange}
-            required
-            autoComplete="current-password"
-          />
-        </div>
+      <div className="space-y-4">
+        <p className="text-sm text-gray-500">
+          One tap with your Google account. No password to remember, no code to wait for.
+        </p>
 
         {error && (
           <p role="alert" className="text-sm text-danger bg-red-50 px-3 py-2 rounded-lg">
@@ -173,22 +71,22 @@ export default function LoginPage() {
           </p>
         )}
 
-        {notice && (
-          <p role="status" className="text-sm text-success bg-green-50 px-3 py-2 rounded-lg">
-            {notice}
-          </p>
-        )}
-
-        {unconfirmed && (
-          <Button type="button" variant="outline" className="w-full" disabled={resending} onClick={resendConfirmation}>
-            {resending ? "Sending..." : "Resend confirmation email"}
-          </Button>
-        )}
-
-        <Button type="submit" className="w-full" size="lg" disabled={loading}>
-          {loading ? "Signing in..." : "Log in"}
+        <Button
+          type="button"
+          variant="outline"
+          size="lg"
+          className="w-full gap-3"
+          disabled={loading}
+          onClick={continueWithGoogle}
+        >
+          <GoogleLogo />
+          {loading ? "Opening Google..." : "Continue with Google"}
         </Button>
-      </form>
+
+        <p className="text-xs text-gray-400 text-center">
+          New here? Same button. We will ask for your school details right after.
+        </p>
+      </div>
     </AuthShell>
   )
 }
