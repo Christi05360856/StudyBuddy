@@ -1,9 +1,8 @@
 // PATH: src/components/auth-shell.tsx
-// The shared frame for the Sign up and Log in pages.
+// The shared frame for the Log in page (sign up and log in are the same Google button now).
 //  - Phone:   a blue header on top, the form sits on a rounded sheet below it.
 //  - Laptop:  two columns. Blue panel with the story on the left, the form on the right.
 
-import Link from "next/link"
 import { cn } from "@/lib/utils"
 import { FileUp, ListChecks, Sparkles } from "lucide-react"
 
@@ -14,13 +13,11 @@ const steps = [
 ]
 
 export function AuthShell({
-  active,
   headline,
   subtext,
   heading,
   children,
 }: {
-  active: "signup" | "login"
   headline: string
   subtext: string
   heading: string
@@ -82,27 +79,6 @@ export function AuthShell({
         )}
       >
         <div className="mx-auto w-full max-w-md">
-          <div className="flex gap-2 mb-6 p-1 rounded-2xl bg-muted">
-            <Link
-              href="/signup"
-              className={cn(
-                "flex-1 h-10 rounded-xl text-sm font-medium flex items-center justify-center transition-colors",
-                active === "signup" ? "bg-card text-primary shadow-sm" : "text-gray-500"
-              )}
-            >
-              Sign up
-            </Link>
-            <Link
-              href="/login"
-              className={cn(
-                "flex-1 h-10 rounded-xl text-sm font-medium flex items-center justify-center transition-colors",
-                active === "login" ? "bg-card text-primary shadow-sm" : "text-gray-500"
-              )}
-            >
-              Log in
-            </Link>
-          </div>
-
           <h2 className="text-2xl font-bold mb-5">{heading}</h2>
           {children}
         </div>
