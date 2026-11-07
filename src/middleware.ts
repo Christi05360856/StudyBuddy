@@ -11,7 +11,7 @@ type CookieToSet = {
 
 // Pages anyone can open without logging in.
 // Everything NOT listed here needs a login, so a new page is protected by default.
-const PUBLIC_PAGES = ['/', '/login', '/signup', '/forgot-password', '/reset-password', '/auth']
+const PUBLIC_PAGES = ['/', '/login', '/signup', '/auth']
 
 // Pages a logged-in student has no reason to see again
 const AUTH_ONLY_PAGES = ['/login', '/signup']
