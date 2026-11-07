@@ -7,6 +7,7 @@ import { Loader2 } from "lucide-react"
 import { BottomNav } from "@/components/bottom-nav"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { BackButton } from "@/components/back-button"
 import { createClient } from "@/lib/supabase/client"
 
 type CourseRef = { code: string } | { code: string }[] | null
@@ -128,7 +129,10 @@ export default function ProgressPage() {
   return (
     <div className="min-h-screen pb-24">
       <div className="max-w-lg mx-auto px-5 pt-8">
-        <h1 className="text-2xl font-bold mb-6">Progress</h1>
+        <div className="flex items-center gap-3 mb-6">
+          <BackButton fallback="/home" />
+          <h1 className="text-2xl font-bold">Progress</h1>
+        </div>
 
         {loading ? (
           <div className="flex justify-center py-16">
