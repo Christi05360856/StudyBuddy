@@ -75,6 +75,9 @@ export function OnboardingTour() {
   const [step, setStep] = useState(0)
   const [spot, setSpot] = useState<DOMRect | null>(null)
 
+  // The tour can show on any app page, but it only starts by itself on Home,
+  // where the bottom bar it points at is always visible.
+  const onHome = pathname.startsWith("/home")
   const onApp =
     pathname.startsWith("/home") ||
     pathname.startsWith("/courses") ||
@@ -84,8 +87,9 @@ export function OnboardingTour() {
     pathname.startsWith("/quiz") ||
     pathname.startsWith("/flashcards")
 
+  // First visit: start by itself on Home
   useEffect(() => {
-    if (!onApp) return
+    if (!onHome) return
     try {
       if (localStorage.getItem(ONBOARDING_STORAGE_KEY) === "1") return
     } catch {
@@ -96,7 +100,19 @@ export function OnboardingTour() {
       setOpen(true)
     }, 600)
     return () => clearTimeout(t)
-  }, [onApp])
+  }, [onHome])
+
+  // "Replay app tour" on the Profile page sends the student to /home?tour=1
+  useEffect(() => {
+    if (!onHome) return
+    if (new URLSearchParams(window.location.search).get("tour") !== "1") return
+    const t = window.setTimeout(() => {
+      window.history.replaceState(null, "", "/home") // so a refresh does not replay it
+      setStep(0)
+      setOpen(true)
+    }, 400)
+    return () => clearTimeout(t)
+  }, [onHome, pathname])
 
   useEffect(() => {
     const onStart = () => {
