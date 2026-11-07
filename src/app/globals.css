@@ -114,3 +114,15 @@ html {
     max-width: 50rem;
   }
 }
+
+/* Used by the onboarding steps as they open up one by one */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
