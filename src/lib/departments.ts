@@ -1,10 +1,5 @@
 // PATH: src/lib/departments.ts
-/** Fixed lists – never free text. */
 
-// A broad starter list of programmes taught in Nigerian universities, polytechnics and colleges of education.
-// It is NOT limited to this list: a student can search, then tap "Use" (or type their own department).
-// Names that students typed themselves are saved as typed, so nothing breaks if a department is missing.
-// To add a department, add its name in quotes below (keep the list in A-Z order).
 export const DEPARTMENTS: string[] = [
   "Accounting",
   "Actuarial Science",
@@ -160,6 +155,7 @@ export const LEVELS = [
   "300",
   "400",
   "500",
+  "600",
   "ND 1",
   "ND 2",
   "HND 1",
@@ -167,3 +163,16 @@ export const LEVELS = [
 ] as const
 
 export type Level = (typeof LEVELS)[number]
+
+/**
+ * Which levels a student can pick, based on the type of school.
+ *  - University and College of Education: 100 to 500
+ *  - Polytechnic: ND 1 to HND 2
+ */
+export function levelsFor(type: string): readonly Level[] {
+  if (type === "Polytechnic") return ["ND 1", "ND 2", "HND 1", "HND 2"]
+  if (type === "University" || type === "College of Education") {
+    return ["100", "200", "300", "400", "500", "600" ]
+  }
+  return []
+}
