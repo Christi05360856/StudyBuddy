@@ -5,7 +5,6 @@ import { useEffect, useState, useRef } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { BottomNav } from "@/components/bottom-nav"
 import {
-  ArrowLeft,
   Upload,
   FileText,
   CheckCircle2,
@@ -25,6 +24,7 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
+import { BackButton } from "@/components/back-button"
 import { createClient } from "@/lib/supabase/client"
 import { uploadToStorage } from "@/lib/upload"
 import { ACCEPT_ATTRIBUTE, FILE_TYPES, getExtension, stripExtension } from "@/lib/file-types"
@@ -660,13 +660,7 @@ export default function CourseDetailPage() {
     <div className="min-h-screen pb-24">
       <div className="max-w-lg mx-auto px-5 pt-6">
         <div className="flex items-center gap-3 mb-6">
-          <button
-            onClick={() => router.back()}
-            aria-label="Go back"
-            className="p-2 -ml-2 rounded-full hover:bg-muted"
-          >
-            <ArrowLeft size={20} />
-          </button>
+          <BackButton fallback="/courses" />
           <div className="min-w-0 flex-1">
             <p className="text-sm text-gray-500">Course</p>
             <h1 className="text-xl font-bold">{course.code}</h1>
