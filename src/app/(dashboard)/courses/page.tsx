@@ -7,6 +7,7 @@ import { Plus, ChevronRight, Loader2, Trash2 } from "lucide-react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { BackButton } from "@/components/back-button"
 import { createClient } from "@/lib/supabase/client"
 import {
   formatCourseCodeInput,
@@ -160,7 +161,10 @@ export default function CoursesPage() {
     <div className="min-h-screen pb-24">
       <div className="max-w-lg mx-auto px-5 pt-8">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold">My Courses</h1>
+          <div className="flex items-center gap-3">
+            <BackButton fallback="/home" />
+            <h1 className="text-2xl font-bold">My Courses</h1>
+          </div>
           <button
             onClick={openAdd}
             aria-label="Add a course"
