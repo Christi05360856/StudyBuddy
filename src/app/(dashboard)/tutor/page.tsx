@@ -2,12 +2,13 @@
 "use client"
 
 import { useState, useRef, useEffect, Suspense } from "react"
-import { useSearchParams, useRouter } from "next/navigation"
+import { useSearchParams } from "next/navigation"
 import { BottomNav } from "@/components/bottom-nav"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { Send, Loader2, ArrowLeft, Check, Folder, FolderOpen, ChevronDown, FileText } from "lucide-react"
+import { Send, Loader2, Check, Folder, FolderOpen, ChevronDown, FileText } from "lucide-react"
 import Link from "next/link"
+import { BackButton } from "@/components/back-button"
 import { createClient } from "@/lib/supabase/client"
 import { Markdown } from "@/components/markdown"
 import { HeadphonesButton } from "@/components/music/headphones-button"
@@ -155,7 +156,6 @@ function CourseFolders() {
 
 function TutorContent() {
   const searchParams = useSearchParams()
-  const router = useRouter()
   const materialId = searchParams.get("material")
 
   const [level, setLevel] = useState<"primary" | "normal" | "exam">("primary")
@@ -359,9 +359,7 @@ function TutorContent() {
       <div className="min-h-screen pb-24">
         <div className="max-w-lg mx-auto px-5 pt-6">
           <div className="flex items-center gap-3 mb-6">
-            <button onClick={() => router.back()} className="p-2 -ml-2 rounded-full hover:bg-muted">
-              <ArrowLeft size={20} />
-            </button>
+            <BackButton fallback="/home" />
             <div className="min-w-0">
               <p className="font-semibold truncate">{materialTitle || "Material"}</p>
               <p className="text-xs text-gray-500">Choose a topic to study</p>
@@ -440,12 +438,7 @@ function TutorContent() {
     <div className="min-h-screen pb-24 flex flex-col">
       <div className="max-w-lg mx-auto w-full px-5 pt-6 flex-1 flex flex-col">
         <div className="flex items-center gap-3 mb-3">
-          <button
-            onClick={markTopicDone}
-            className="p-2 -ml-2 rounded-full hover:bg-muted"
-          >
-            <ArrowLeft size={20} />
-          </button>
+          <BackButton onClick={markTopicDone} />
           <div className="min-w-0 flex-1">
             <p className="font-semibold text-sm truncate">{activeTopic}</p>
             <p className="text-xs text-gray-500 truncate">{materialTitle}</p>
