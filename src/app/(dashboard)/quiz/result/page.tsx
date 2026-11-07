@@ -7,6 +7,7 @@ import { Check, Lightbulb, Loader2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { BottomNav } from "@/components/bottom-nav"
 import { cn } from "@/lib/utils"
+import { BackButton } from "@/components/back-button"
 import { createClient } from "@/lib/supabase/client"
 import { LAST_RESULT_KEY, type LastResult, type ReviewItem } from "@/lib/quiz-review"
 
@@ -135,8 +136,10 @@ function ResultContent() {
 
   return (
     <div className="min-h-screen pb-24">
-      <div className="max-w-lg mx-auto px-5 pt-12">
-        <div className="text-center">
+      <div className="max-w-lg mx-auto px-5 pt-6">
+        {/* Going "back" from a result would reopen the quiz, so this leads to Courses */}
+        <BackButton onClick={() => router.push("/courses")} />
+        <div className="text-center pt-4">
           <h1 className="text-2xl font-bold mb-8">
             {percent >= 70 ? "Nice work" : percent >= 50 ? "Good effort" : "Keep practising"}
           </h1>
