@@ -3,20 +3,16 @@
 
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { ArrowLeft, Loader2, LogOut } from "lucide-react"
+import { Loader2, LogOut } from "lucide-react"
+import { BackButton } from "@/components/back-button"
 import { BottomNav } from "@/components/bottom-nav"
 import { Button } from "@/components/ui/button"
 import { createClient } from "@/lib/supabase/client"
 import { APP_VERSION } from "@/lib/app-info"
-import { LEVELS, cleanDepartment } from "@/lib/departments"
-import { DepartmentField } from "@/components/department-field"
-import { cn } from "@/lib/utils"
 import { ThemeToggle } from "@/components/theme-toggle"
-import { startOnboardingTour } from "@/components/onboarding-tour"
 
 type ProfileData = {
   full_name: string
-  matric_number: string
   institution: string
   department: string | null
   level: string | null
@@ -48,11 +44,6 @@ export default function ProfilePage() {
   const [email, setEmail] = useState("")
   const [loading, setLoading] = useState(true)
   const [signingOut, setSigningOut] = useState(false)
-  const [editing, setEditing] = useState(false)
-  const [dept, setDept] = useState("")
-  const [level, setLevel] = useState("")
-  const [saving, setSaving] = useState(false)
-  const [editError, setEditError] = useState<string | null>(null)
 
   useEffect(() => {
     const load = async () => {
@@ -68,7 +59,7 @@ export default function ProfilePage() {
 
       const { data } = await supabase
         .from("profiles")
-        .select("full_name, matric_number, institution, department, level, created_at")
+        .select("full_name, institution, department, level, created_at")
         .eq("id", user.id)
         .single()
 
@@ -76,8 +67,6 @@ export default function ProfilePage() {
         // Older accounts may have "Other" saved: treat it as not set so they can enter the real one
         const savedDept = data.department === "Other" ? null : data.department
         setProfile({ ...data, department: savedDept })
-        setDept(savedDept ?? "")
-        setLevel(data.level ?? "")
       }
       setLoading(false)
     }
@@ -89,35 +78,6 @@ export default function ProfilePage() {
     await supabase.auth.signOut()
     router.push("/login")
     router.refresh()
-  }
-
-  const saveExtras = async () => {
-    const department = cleanDepartment(dept)
-    if (!department || !level) {
-      setEditError("Please choose or type your department, and choose your level.")
-      return
-    }
-    setSaving(true)
-    setEditError(null)
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) return
-
-    const { error } = await supabase
-      .from("profiles")
-      .update({ department, level })
-      .eq("id", user.id)
-
-    if (error) {
-      setEditError("Could not save. Please try again.")
-      setSaving(false)
-      return
-    }
-
-    setProfile((p) => (p ? { ...p, department, level } : p))
-    setEditing(false)
-    setSaving(false)
   }
 
   const registeredOn = profile?.created_at
@@ -132,9 +92,7 @@ export default function ProfilePage() {
     <div className="min-h-screen pb-24">
       <div className="max-w-lg mx-auto px-5 pt-6">
         <div className="flex items-center gap-3 mb-6">
-          <button onClick={() => router.back()} className="p-2 -ml-2 rounded-full hover:bg-muted">
-            <ArrowLeft size={20} />
-          </button>
+          <BackButton fallback="/home" />
           <h1 className="text-xl font-bold">My profile</h1>
         </div>
 
@@ -155,7 +113,6 @@ export default function ProfilePage() {
 
             <div className="rounded-2xl bg-card border border-border px-4 mb-4">
               <Row label="Full name" value={profile.full_name} />
-              <Row label="Matric number" value={profile.matric_number} />
               <Row label="Email" value={email || "-"} />
               <Row label="School" value={profile.institution} />
               <Row label="Department" value={profile.department || "Not set"} />
@@ -172,69 +129,16 @@ export default function ProfilePage() {
             <div className="rounded-2xl border border-border bg-card p-4 mb-4 space-y-2">
               <p className="text-sm font-medium">Help</p>
               <p className="text-xs text-gray-500">
-                Short walkthrough of Home, Courses, Tutor, share and study music.
+                Takes you to the Home page and walks you through the app again.
               </p>
               <Button
                 variant="outline"
                 className="w-full"
-                onClick={() => startOnboardingTour()}
+                onClick={() => router.push("/home?tour=1")}
               >
                 Replay app tour
               </Button>
             </div>
-
-            {(!profile.department || !profile.level || editing) && (
-              <div className="rounded-2xl border border-border bg-card p-4 mb-4 space-y-3">
-                <p className="text-sm font-medium">
-                  {profile.department && profile.level ? "Update department & level" : "Add department & level"}
-                </p>
-                <DepartmentField
-                  id="profile-department"
-                  value={dept}
-                  onChange={(v) => {
-                    setDept(v)
-                    setEditError(null)
-                  }}
-                />
-                <div className="grid grid-cols-3 gap-2">
-                  {LEVELS.map((lvl) => (
-                    <button
-                      key={lvl}
-                      type="button"
-                      onClick={() => {
-                        setLevel(lvl)
-                        setEditError(null)
-                      }}
-                      className={cn(
-                        "min-h-10 px-2 py-1.5 rounded-xl border text-sm font-medium transition-colors",
-                        level === lvl
-                          ? "bg-primary text-white border-primary"
-                          : "bg-card border-border text-foreground"
-                      )}
-                    >
-                      {lvl}
-                    </button>
-                  ))}
-                </div>
-                {editError && <p className="text-sm text-danger">{editError}</p>}
-                <div className="flex gap-2">
-                  {editing && (
-                    <Button variant="secondary" className="flex-1" onClick={() => setEditing(false)}>
-                      Cancel
-                    </Button>
-                  )}
-                  <Button className="flex-1" disabled={saving} onClick={saveExtras}>
-                    {saving ? "Saving..." : "Save"}
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {profile.department && profile.level && !editing && (
-              <Button variant="outline" className="w-full mb-4" onClick={() => setEditing(true)}>
-                Edit department & level
-              </Button>
-            )}
 
             <Button
               variant="outline"
