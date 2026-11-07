@@ -3,9 +3,10 @@
 
 import { Suspense, useCallback, useEffect, useRef, useState } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
-import { ArrowLeft, Loader2, RotateCcw, Check, Sparkles } from "lucide-react"
+import { Loader2, RotateCcw, Check, Sparkles } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { BottomNav } from "@/components/bottom-nav"
+import { BackButton } from "@/components/back-button"
 import { createClient } from "@/lib/supabase/client"
 import { lagosToday } from "@/lib/streak"
 import { cn } from "@/lib/utils"
@@ -186,13 +187,7 @@ function FlashcardsContent() {
     return (
       <div className="min-h-screen pb-24">
         <div className="max-w-lg mx-auto px-5 pt-6">
-          <button
-            onClick={() => router.back()}
-            className="p-2 -ml-2 rounded-full hover:bg-muted mb-4"
-            aria-label="Go back"
-          >
-            <ArrowLeft size={20} />
-          </button>
+          <BackButton fallback="/courses" />
           <p className="text-center text-gray-500 py-16">
             No flashcards yet. Process a note first so the AI can create questions.
           </p>
@@ -206,13 +201,7 @@ function FlashcardsContent() {
     return (
       <div className="min-h-screen pb-24">
         <div className="max-w-lg mx-auto px-5 pt-6">
-          <button
-            onClick={() => router.back()}
-            className="p-2 -ml-2 rounded-full hover:bg-muted mb-6"
-            aria-label="Go back"
-          >
-            <ArrowLeft size={20} />
-          </button>
+          <BackButton fallback="/courses" />
           <div className="text-center py-12 space-y-4">
             <div className="mx-auto w-16 h-16 rounded-full bg-primary/15 flex items-center justify-center">
               <Sparkles className="text-primary" size={28} />
@@ -250,13 +239,7 @@ function FlashcardsContent() {
       <div className="max-w-lg mx-auto px-5 pt-6">
         {/* Header */}
         <div className="flex items-center gap-3 mb-3">
-          <button
-            onClick={() => router.back()}
-            className="p-2 -ml-2 rounded-full hover:bg-muted"
-            aria-label="Go back"
-          >
-            <ArrowLeft size={20} />
-          </button>
+          <BackButton fallback="/courses" />
           <div className="min-w-0 flex-1">
             <p className="text-sm text-gray-500">Flashcards</p>
             <h1 className="text-lg font-bold truncate">{materialTitle || "Review"}</h1>
