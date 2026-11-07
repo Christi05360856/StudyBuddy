@@ -5,6 +5,7 @@ import { useEffect, useState } from "react"
 import { createClient } from "@/lib/supabase/client"
 import { Button } from "@/components/ui/button"
 import { AuthShell } from "@/components/auth-shell"
+import Link from "next/link"
 
 // Only allow going to a page inside our own app (stops "log in then jump to another website" tricks)
 function safeNext(raw: string | null): string {
@@ -85,6 +86,11 @@ export default function LoginPage() {
 
         <p className="text-xs text-gray-400 text-center">
           New here? Same button. We will ask for your school details right after.
+        </p>
+                <p className="text-xs text-gray-400 text-center">
+          By continuing you agree to our{" "}
+          <Link href="/terms" className="underline">Terms</Link> and{" "}
+          <Link href="/privacy" className="underline">Privacy Policy</Link>.
         </p>
       </div>
     </AuthShell>
