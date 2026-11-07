@@ -7,9 +7,6 @@ import { Plus, Loader2, ChevronRight, FileText, Flame, Calendar } from "lucide-r
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { computeStreak, daysUntil, lagosToday } from "@/lib/streak"
-import { LEVELS, cleanDepartment } from "@/lib/departments"
-import { DepartmentField } from "@/components/department-field"
-import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { HeadphonesButton } from "@/components/music/headphones-button"
 import type { SharedMaterialRow } from "@/lib/share"
@@ -43,11 +40,6 @@ export default function HomePage() {
   const [search, setSearch] = useState("")
   const [loading, setLoading] = useState(true)
   const [streak, setStreak] = useState(0)
-  const [needsProfile, setNeedsProfile] = useState(false)
-  const [dept, setDept] = useState("")
-  const [level, setLevel] = useState("")
-  const [savingProfile, setSavingProfile] = useState(false)
-  const [profileError, setProfileError] = useState<string | null>(null)
   const [deptShares, setDeptShares] = useState<
     { code: string; title: string | null; count: number }[]
   >([])
@@ -89,14 +81,6 @@ export default function HomePage() {
       const days = (daysRes.data ?? []).map((r) => r.day as string)
       setStreak(computeStreak(days))
 
-      // One-time prompt for existing users who signed up before department/level existed
-      const savedDept = profileRes.data?.department === "Other" ? "" : profileRes.data?.department
-      if (profileRes.data && (!savedDept || !profileRes.data.level)) {
-        setNeedsProfile(true)
-        setDept(savedDept ?? "")
-        setLevel(profileRes.data.level ?? "")
-      }
-
       // Department shared courses (grouped by code)
       if (profileRes.data?.institution && profileRes.data?.department) {
         const { data: shared } = await supabase
@@ -124,33 +108,6 @@ export default function HomePage() {
     }
     load()
   }, [])
-
-  const saveProfileExtras = async () => {
-    const department = cleanDepartment(dept)
-    if (!department || !level) {
-      setProfileError("Please choose or type your department, and choose your level.")
-      return
-    }
-    setSavingProfile(true)
-    setProfileError(null)
-    const {
-      data: { user },
-    } = await supabase.auth.getUser()
-    if (!user) return
-
-    const { error } = await supabase
-      .from("profiles")
-      .update({ department, level })
-      .eq("id", user.id)
-
-    if (error) {
-      setProfileError("Could not save. Please try again.")
-      setSavingProfile(false)
-      return
-    }
-    setNeedsProfile(false)
-    setSavingProfile(false)
-  }
 
   const firstName = fullName.split(" ")[0] || "there"
   // Use Africa/Lagos so greeting matches Nigerian local time (not UTC server time)
@@ -264,47 +221,6 @@ export default function HomePage() {
           )
         })()}
 
-        {/* One-time department / level prompt for older accounts */}
-        {needsProfile && (
-          <div className="rounded-2xl border border-primary/20 bg-primary/5 p-4 mb-6 space-y-3">
-            <p className="text-sm font-medium text-foreground">
-              Quick setup – tell us your department and level
-            </p>
-            <DepartmentField
-              id="home-department"
-              value={dept}
-              onChange={(v) => {
-                setDept(v)
-                setProfileError(null)
-              }}
-            />
-            <div className="grid grid-cols-3 gap-2">
-              {LEVELS.map((lvl) => (
-                <button
-                  key={lvl}
-                  type="button"
-                  onClick={() => {
-                    setLevel(lvl)
-                    setProfileError(null)
-                  }}
-                  className={cn(
-                    "min-h-10 px-2 py-1.5 rounded-xl border text-sm font-medium transition-colors",
-                    level === lvl
-                      ? "bg-primary text-white border-primary"
-                      : "bg-card border-border text-foreground"
-                  )}
-                >
-                  {lvl}
-                </button>
-              ))}
-            </div>
-            {profileError && <p className="text-sm text-danger">{profileError}</p>}
-            <Button className="w-full" size="sm" disabled={savingProfile} onClick={saveProfileExtras}>
-              {savingProfile ? "Saving..." : "Save"}
-            </Button>
-          </div>
-        )}
-
         <div className="relative mb-8">
           <input
             type="text"
@@ -380,7 +296,7 @@ export default function HomePage() {
                     <Link
                       key={s.code}
                       href="/courses"
-                      className="flex items-center gap-3 p-3.5 rounded-2xl bg-white border border-border"
+                      className="flex items-center gap-3 p-3.5 rounded-2xl bg-card border border-border"
                     >
                       <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary font-bold text-xs">
                         {s.code.split(" ")[0].slice(0, 4)}
