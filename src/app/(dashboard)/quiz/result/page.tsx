@@ -7,7 +7,6 @@ import { Check, Lightbulb, Loader2, X } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { BottomNav } from "@/components/bottom-nav"
 import { cn } from "@/lib/utils"
-import { BackButton } from "@/components/back-button"
 import { createClient } from "@/lib/supabase/client"
 import { LAST_RESULT_KEY, type LastResult, type ReviewItem } from "@/lib/quiz-review"
 
@@ -40,7 +39,30 @@ function ResultContent() {
 
   useEffect(() => {
     const load = async () => {
-      // 1. The saved attempt (this is also what the Progress page opens)
+      // 1. Prefer the phone copy first — same options the student actually saw
+      try {
+        const raw = sessionStorage.getItem(LAST_RESULT_KEY)
+        if (raw) {
+          const copy = JSON.parse(raw) as LastResult
+          if (
+            copy.review?.length &&
+            (copy.total === urlTotal || !urlTotal) &&
+            (copy.correct === urlScore || urlScore === 0 || copy.correct === urlScore)
+          ) {
+            setReview(copy.review)
+            setScore(copy.correct)
+            setTotal(copy.total)
+            setSeconds(copy.seconds)
+            if (copy.materialId) setMaterialId(copy.materialId)
+            setLoading(false)
+            return
+          }
+        }
+      } catch {
+        // fall through to saved attempt
+      }
+
+      // 2. The saved attempt (Progress page / shared device)
       if (attemptId) {
         const { data: attempt } = await supabase
           .from("quiz_attempts")
@@ -80,10 +102,8 @@ function ResultContent() {
               })
             })
             setReview(items)
-            // Questions are replaced when a note is processed again
             setSomeMissing(items.length < ids.length)
           } else {
-            // Very old attempts did not keep the answers
             setSomeMissing(attempt.total_questions > 0)
           }
           setLoading(false)
@@ -91,20 +111,6 @@ function ResultContent() {
         }
       }
 
-      // 2. The copy kept on this phone (used when the attempt could not be saved)
-      try {
-        const raw = sessionStorage.getItem(LAST_RESULT_KEY)
-        if (raw) {
-          const copy = JSON.parse(raw) as LastResult
-          if (copy.total === urlTotal && copy.correct === urlScore) {
-            setReview(copy.review)
-            setSeconds(copy.seconds)
-            if (copy.materialId) setMaterialId(copy.materialId)
-          }
-        }
-      } catch {
-        // nothing to show, the score alone is fine
-      }
       setLoading(false)
     }
 
@@ -136,10 +142,8 @@ function ResultContent() {
 
   return (
     <div className="min-h-screen pb-24">
-      <div className="max-w-lg mx-auto px-5 pt-6">
-        {/* Going "back" from a result would reopen the quiz, so this leads to Courses */}
-        <BackButton onClick={() => router.push("/courses")} />
-        <div className="text-center pt-4">
+      <div className="max-w-lg mx-auto px-5 pt-12">
+        <div className="text-center">
           <h1 className="text-2xl font-bold mb-8">
             {percent >= 70 ? "Nice work" : percent >= 50 ? "Good effort" : "Keep practising"}
           </h1>
