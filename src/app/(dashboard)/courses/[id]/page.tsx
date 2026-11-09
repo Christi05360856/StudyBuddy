@@ -5,6 +5,7 @@ import { useEffect, useState, useRef } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { BottomNav } from "@/components/bottom-nav"
 import {
+  ArrowLeft,
   Upload,
   FileText,
   CheckCircle2,
@@ -17,14 +18,20 @@ import {
   Calendar,
   Share2,
 } from "lucide-react"
-import { toTitleCase, isValidTitle } from "@/lib/course-code"
+import {
+  toTitleCase,
+  isValidTitle,
+  formatCourseCodeInput,
+  normalizeCourseCode,
+  toCodeNormalized,
+  mismatchedCourseCode,
+} from "@/lib/course-code"
 import { makeContentKey, type SharedMaterialRow } from "@/lib/share"
 import { HeadphonesButton } from "@/components/music/headphones-button"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { cn } from "@/lib/utils"
-import { BackButton } from "@/components/back-button"
 import { createClient } from "@/lib/supabase/client"
 import { uploadToStorage } from "@/lib/upload"
 import { ACCEPT_ATTRIBUTE, FILE_TYPES, getExtension, stripExtension } from "@/lib/file-types"
@@ -107,6 +114,7 @@ export default function CourseDetailPage() {
 
   // Title + assessment date editing
   const [editTitle, setEditTitle] = useState("")
+  const [editCode, setEditCode] = useState("")
   const [editDate, setEditDate] = useState("")
   const [editType, setEditType] = useState("Test")
   const [savingMeta, setSavingMeta] = useState(false)
@@ -272,6 +280,17 @@ export default function CourseDetailPage() {
           ? pendingFile.name
           : `${label} – ${stripExtension(pendingFile.name)}`
 
+    // Reject if filename/title clearly names a different course code
+    const foreign = mismatchedCourseCode(course.code, pendingFile.name, finalTitle)
+    if (foreign) {
+      setErrorMsg(
+        `This file looks like ${foreign}, not ${course.code}. Open the right course, or edit this course code.`
+      )
+      setShowLabelModal(false)
+      setPendingFile(null)
+      return
+    }
+
     // Hard block if this note is already shared in the department (saves AI tokens)
     if (course && profileInst && profileDept) {
       const codeNorm = course.code.replace(/\s+/g, "").toUpperCase()
@@ -429,6 +448,11 @@ export default function CourseDetailPage() {
 
   const saveMeta = async () => {
     if (!course) return
+    const cleanCode = normalizeCourseCode(editCode)
+    if (!cleanCode) {
+      setMetaError("Course code must look like CSC 205 or SEN 307.")
+      return
+    }
     const cleanTitle = toTitleCase(editTitle)
     if (!isValidTitle(cleanTitle)) {
       setMetaError("Title must be between 3 and 80 characters.")
@@ -439,18 +463,25 @@ export default function CourseDetailPage() {
     const { error } = await supabase
       .from("courses")
       .update({
+        code: cleanCode,
+        code_normalized: toCodeNormalized(cleanCode),
         title: cleanTitle,
         assessment_date: editDate || null,
         assessment_type: editDate ? editType : null,
       })
       .eq("id", course.id)
     if (error) {
-      setMetaError("Could not save. Please try again.")
+      if (error.code === "23505") {
+        setMetaError("You already have a course with this code.")
+      } else {
+        setMetaError("Could not save. Please try again.")
+      }
       setSavingMeta(false)
       return
     }
     setCourse({
       ...course,
+      code: cleanCode,
       title: cleanTitle,
       assessment_date: editDate || null,
       assessment_type: editDate ? editType : null,
@@ -660,7 +691,13 @@ export default function CourseDetailPage() {
     <div className="min-h-screen pb-24">
       <div className="max-w-lg mx-auto px-5 pt-6">
         <div className="flex items-center gap-3 mb-6">
-          <BackButton fallback="/courses" />
+          <button
+            onClick={() => router.back()}
+            aria-label="Go back"
+            className="p-2 -ml-2 rounded-full hover:bg-muted"
+          >
+            <ArrowLeft size={20} />
+          </button>
           <div className="min-w-0 flex-1">
             <p className="text-sm text-gray-500">Course</p>
             <h1 className="text-xl font-bold">{course.code}</h1>
@@ -669,7 +706,14 @@ export default function CourseDetailPage() {
             ) : (
               <button
                 type="button"
-                onClick={() => setShowMeta(true)}
+                onClick={() => {
+                  setEditCode(course.code)
+                  setEditTitle(course.title || "")
+                  setEditDate(course.assessment_date || "")
+                  setEditType(course.assessment_type || "Test")
+                  setMetaError(null)
+                  setShowMeta(true)
+                }}
                 className="text-sm text-amber-600 font-medium"
               >
                 Add a title
@@ -695,7 +739,16 @@ export default function CourseDetailPage() {
             )}
             <button
               type="button"
-              onClick={() => setShowMeta(true)}
+              onClick={() => {
+                if (course) {
+                  setEditCode(course.code)
+                  setEditTitle(course.title || "")
+                  setEditDate(course.assessment_date || "")
+                  setEditType(course.assessment_type || "Test")
+                  setMetaError(null)
+                }
+                setShowMeta(true)
+              }}
               className="p-2 rounded-full hover:bg-muted text-gray-500"
               aria-label="Edit course details"
             >
@@ -1015,6 +1068,19 @@ export default function CourseDetailPage() {
         <div className="fixed inset-0 bg-black/40 z-50 flex items-end sm:items-center justify-center p-4">
           <div className="bg-card rounded-2xl w-full max-w-md p-6 space-y-4">
             <h2 className="text-lg font-semibold">Course details</h2>
+            <div>
+              <label className="block text-sm font-medium mb-1">Course code</label>
+              <Input
+                value={editCode}
+                onChange={(e) => {
+                  setEditCode(formatCourseCodeInput(e.target.value))
+                  setMetaError(null)
+                }}
+                placeholder="e.g. CSC 205"
+                className="uppercase"
+              />
+              <p className="text-xs text-gray-400 mt-1">Change this if the folder code is wrong.</p>
+            </div>
             <div>
               <label className="block text-sm font-medium mb-1">Course title</label>
               <Input
