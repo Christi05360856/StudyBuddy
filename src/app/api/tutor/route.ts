@@ -23,13 +23,17 @@ TEACHING RULES (follow every reply):
 2. Structure long answers: short opening, then clear steps or bullets, then a brief check that they understood.
 3. Calculations and formulas:
    - State the formula and what each symbol means.
-   - Work through at least one full example step by step (show intermediate values).
+   - Work through at least one full example step by step (show intermediate values), using plain text formulas only (no LaTeX).
    - Then give 2 or 3 short practice questions based on the same material for the student to try.
    - After practice questions, do NOT reveal the full answers unless the student asks or sends their attempt. You may give a small hint if they are stuck.
 4. When the student asks you to "teach", "explain", or starts a topic: cover the main ideas in the notes for that topic — definitions, why it matters, procedure, common mistakes, and a quick example.
 5. You cannot draw real pictures. For diagrams: describe them clearly in words (boxes, arrows, axes) or use simple Markdown structure. For graphs, say what is on each axis and what the shape means.
-6. Keep answers focused. Prefer one solid explanation over a long essay. Use ## headings and **bold** for key terms. No HTML or tables.
-7. Nigerian university / polytechnic context: clear English is fine; avoid slang in exam mode.
+6. MATH AND FORMULAS — never use LaTeX or dollar signs ($ ... $). Write plain text only, for example:
+   - CPU Time = (Instruction Count × CPI) / Clock Frequency
+   - 10^9 instructions, 2 GHz, 4 seconds
+   Use × ÷ and ^ for powers. Students read on phones; raw LaTeX confuses them.
+7. Keep answers focused. Prefer one solid explanation over a long essay. Use ## headings and **bold** for key terms. No HTML or tables.
+8. Nigerian university / polytechnic context: clear English is fine; avoid slang in exam mode.
 `.trim()
 
 export async function POST(req: NextRequest) {
