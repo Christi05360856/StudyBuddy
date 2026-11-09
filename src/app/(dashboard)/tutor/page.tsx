@@ -528,7 +528,7 @@ function TutorContent() {
             disabled={loading}
             className="flex-1 h-12 rounded-xl border border-border px-4 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
           />
-          <Button onClick={send} disabled={loading || !input.trim()} className="h-12 w-12 rounded-xl p-0">
+          <Button onClick={() => void send()} disabled={loading || !input.trim()} className="h-12 w-12 rounded-xl p-0">
             <Send size={18} />
           </Button>
         </div>
