@@ -10,12 +10,27 @@ import {
 } from "@/lib/ai/limits"
 
 const LEVEL_INSTRUCTIONS = {
-  primary: `Explain like the student is in Primary 2. Use very simple words, short sentences, and everyday examples a child would understand. Avoid jargon. If you must use a technical word, explain it immediately in simple terms.`,
-  normal: `Explain clearly at undergraduate level. Be concise and accurate.`,
-  exam: `Explain in a way that prepares the student for exams. Use precise terminology, highlight what examiners look for, and give exam-style tips where useful.`,
+  primary: `Explain simply, like a patient senior classmate. Short sentences, everyday Nigerian examples where they help. If you use a technical word, define it in plain English right away.`,
+  normal: `Explain clearly at undergraduate / polytechnic level. Be accurate, structured, and practical.`,
+  exam: `Teach for exams. Use precise terms, flag what examiners usually ask, give exam-style tips, and show how marks are often awarded for steps (especially calculations).`,
 }
 
 type ChatMessage = { role: "user" | "assistant"; content: string }
+
+const TEACHING_RULES = `
+TEACHING RULES (follow every reply):
+1. Ground every explanation in the student's lecture notes below when notes are provided. Do not invent facts that are not supported by the notes. If the notes are thin on a point, say so and teach carefully from what is there.
+2. Structure long answers: short opening, then clear steps or bullets, then a brief check that they understood.
+3. Calculations and formulas:
+   - State the formula and what each symbol means.
+   - Work through at least one full example step by step (show intermediate values).
+   - Then give 2 or 3 short practice questions based on the same material for the student to try.
+   - After practice questions, do NOT reveal the full answers unless the student asks or sends their attempt. You may give a small hint if they are stuck.
+4. When the student asks you to "teach", "explain", or starts a topic: cover the main ideas in the notes for that topic — definitions, why it matters, procedure, common mistakes, and a quick example.
+5. You cannot draw real pictures. For diagrams: describe them clearly in words (boxes, arrows, axes) or use simple Markdown structure. For graphs, say what is on each axis and what the shape means.
+6. Keep answers focused. Prefer one solid explanation over a long essay. Use ## headings and **bold** for key terms. No HTML or tables.
+7. Nigerian university / polytechnic context: clear English is fine; avoid slang in exam mode.
+`.trim()
 
 export async function POST(req: NextRequest) {
   try {
@@ -34,7 +49,9 @@ export async function POST(req: NextRequest) {
     })
     if (creditError) {
       console.error("consume_ai_credit error:", creditError)
-      // Fail-open: log and continue so students can still use the tutor
+      if (!isMissingLimitSetup(creditError)) {
+        // Still fail-open for other RPC glitches so study is not blocked
+      }
     } else if (allowed === false) {
       return NextResponse.json({ error: limitReachedMessage("tutor") }, { status: 429 })
     }
@@ -63,7 +80,8 @@ export async function POST(req: NextRequest) {
       .map((m) => `${m.role === "user" ? "Student" : "Tutor"}: ${String(m.content).slice(0, 1500)}`)
       .join("\n\n")
 
-    const notes = typeof context === "string" ? context.slice(0, 12000) : ""
+    // More note context so teaching can cover the material properly
+    const notes = typeof context === "string" ? context.slice(0, 18000) : ""
     const name =
       typeof studentName === "string"
         ? studentName.replace(/[^a-zA-Z\u00C0-\u024F' -]/g, "").trim().slice(0, 30)
@@ -80,30 +98,29 @@ export async function POST(req: NextRequest) {
         ? `The student is currently studying this topic: "${topic.trim()}". Stay focused on it unless they ask to change.`
         : ""
 
-    const prompt = `You are a helpful study tutor for Nigerian university and polytechnic students.
+    const prompt = `You are StudyBuddy's AI tutor for Nigerian university and polytechnic students.
+Your job is to make sure the student understands their own class materials.
+
+LEVEL:
 ${instruction}
 
-Keep answers focused and not too long.
+${TEACHING_RULES}
+
 ${nameRule}
 ${topicLine}
 
-FORMATTING RULES:
-- Use simple Markdown only: short headings with ##, **bold** for key terms, bullet lists with "-", numbered lists when useful.
-- Keep paragraphs short and easy to scan.
-- Do not use tables or HTML.
-${notes ? `\nThe student's lecture notes (teach from these):\n${notes}\n` : ""}
-${transcript ? `\nConversation so far:\n${transcript}\n` : ""}
+${notes ? `STUDENT LECTURE NOTES (primary source — teach from these):\n${notes}\n` : "No lecture notes were attached. Teach carefully and say when you need their notes.\n"}
+${transcript ? `Conversation so far:\n${transcript}\n` : ""}
 Student: ${message}`
 
     const result = await callGemini({
       parts: [{ text: prompt }],
-      maxOutputTokens: 4096,
-      timeoutMs: 40000,
+      maxOutputTokens: 6144,
+      timeoutMs: 50000,
     })
 
     if (!result.ok) {
       console.error("Tutor error:", result.error)
-      // Never show technical model names / codes to students
       return NextResponse.json({ error: providerBusyMessage() }, { status: 503 })
     }
 
@@ -135,9 +152,6 @@ Student: ${message}`
     return NextResponse.json({ reply: result.text, model: result.model })
   } catch (err) {
     console.error(err)
-    return NextResponse.json(
-      { error: "Something went wrong. Please try again." },
-      { status: 500 }
-    )
+    return NextResponse.json({ error: "Something went wrong. Please try again." }, { status: 500 })
   }
 }
