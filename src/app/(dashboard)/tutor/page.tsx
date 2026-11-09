@@ -20,6 +20,30 @@ type Message = {
 type FolderCourse = { id: string; code: string; title: string | null }
 type FolderNote = { id: string; title: string; course_id: string }
 
+function doneKey(materialId: string) {
+  return `sb_tutor_done_${materialId}`
+}
+
+function loadDoneTopics(materialId: string): Set<string> {
+  try {
+    const raw = localStorage.getItem(doneKey(materialId))
+    if (!raw) return new Set()
+    const arr = JSON.parse(raw) as string[]
+    return new Set(Array.isArray(arr) ? arr : [])
+  } catch {
+    return new Set()
+  }
+}
+
+function saveDoneTopics(materialId: string, set: Set<string>) {
+  try {
+    localStorage.setItem(doneKey(materialId), JSON.stringify([...set]))
+  } catch {
+    // storage blocked
+  }
+}
+
+
 // The AI Tutor home: one folder per course, with its ready notes inside
 function CourseFolders() {
   const supabase = createClient()
@@ -167,6 +191,12 @@ function TutorContent() {
   const [studentName, setStudentName] = useState("") // first name, used in the greeting
   const [topics, setTopics] = useState<string[]>([])
   const [completedTopics, setCompletedTopics] = useState<Set<string>>(new Set())
+
+  // Remember green ticks per note across refresh (still free to re-open any topic)
+  useEffect(() => {
+    if (!materialId) return
+    setCompletedTopics(loadDoneTopics(materialId))
+  }, [materialId])
   const [activeTopic, setActiveTopic] = useState<string | null>(null)
   const [loadingTopics, setLoadingTopics] = useState(false)
   const [phase, setPhase] = useState<"topics" | "chat">("topics")
@@ -298,8 +328,12 @@ function TutorContent() {
   }
 
   const markTopicDone = () => {
-    if (activeTopic) {
-      setCompletedTopics((prev) => new Set(prev).add(activeTopic))
+    if (activeTopic && materialId) {
+      setCompletedTopics((prev) => {
+        const next = new Set(prev).add(activeTopic)
+        saveDoneTopics(materialId, next)
+        return next
+      })
     }
     setActiveTopic(null)
     setMessages([])
