@@ -42,3 +42,37 @@ export function isValidTitle(title: string): boolean {
   const t = title.trim()
   return t.length >= 3 && t.length <= 80
 }
+
+/**
+ * Find course-code-like tokens in a filename or label
+ * e.g. "CSC337_notes.pdf", "Lecture CSC 205.docx", "sen-301-week2"
+ */
+export function findCourseCodesInText(text: string): string[] {
+  const upper = text.toUpperCase()
+  const found = new Set<string>()
+  // CSC337, CSC 337, CSC-337, csc_337
+  const re = /\b([A-Z]{2,4})[\s_\-]?(\d{3}[A-Z]?)\b/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(upper)) !== null) {
+    const canon = `${m[1]} ${m[2]}`
+    if (CODE_REGEX.test(canon)) found.add(canon)
+  }
+  return [...found]
+}
+
+/**
+ * If the file/title clearly names a different course code, return that code.
+ * Returns null when OK to upload (no other code found, or only matches this course).
+ */
+export function mismatchedCourseCode(
+  courseCode: string,
+  fileName: string,
+  materialTitle?: string
+): string | null {
+  const expected = toCodeNormalized(courseCode)
+  const blob = `${fileName} ${materialTitle ?? ""}`
+  const found = findCourseCodesInText(blob)
+  if (found.length === 0) return null
+  const foreign = found.find((c) => toCodeNormalized(c) !== expected)
+  return foreign ?? null
+}
