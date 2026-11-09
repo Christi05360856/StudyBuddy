@@ -1,6 +1,8 @@
 // PATH: src/lib/quiz-shuffle.ts
 /**
- * Fresh random paper every attempt: shuffle questions and option order.
+ * Fresh random paper every attempt.
+ * IMPORTANT: only shuffle QUESTION order — never option order.
+ * Option indices must stay aligned with the database so marking and review stay correct.
  */
 
 export type QuizQuestion = {
@@ -21,29 +23,20 @@ function shuffleInPlace<T>(arr: T[]): T[] {
   return arr
 }
 
-/** New order of questions every time. */
+/** New order of questions every time. Options stay as stored. */
 export function shuffleQuestions<T>(list: T[]): T[] {
   return shuffleInPlace([...list])
 }
 
 /**
- * Shuffle A–D options and keep correct_index pointing at the right answer.
+ * Build the paper for one attempt: take N from pool, shuffle question order only.
+ * Do NOT shuffle A–D — that breaks scoring when the result page reloads from the DB.
  */
-export function shuffleOptions(q: QuizQuestion): QuizQuestion {
-  const indexed = q.options.map((text, i) => ({ text, i }))
-  shuffleInPlace(indexed)
-  const options = indexed.map((x) => x.text)
-  const correct_index = indexed.findIndex((x) => x.i === q.correct_index)
-  return {
-    ...q,
-    options,
-    correct_index: correct_index < 0 ? q.correct_index : correct_index,
-  }
-}
-
-/** Build the paper for one attempt: take N from pool, shuffle order + options. */
 export function buildAttemptPaper(pool: QuizQuestion[], count: number): QuizQuestion[] {
   const mixed = shuffleQuestions(pool)
-  const slice = mixed.slice(0, Math.min(count, mixed.length))
-  return slice.map(shuffleOptions)
+  return mixed.slice(0, Math.min(count, mixed.length)).map((q) => ({
+    ...q,
+    // Defensive copy so later mutations cannot touch the pool
+    options: [...q.options],
+  }))
 }
