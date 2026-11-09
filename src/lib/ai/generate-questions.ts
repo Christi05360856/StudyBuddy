@@ -56,13 +56,18 @@ RULES FOR "notes":
 - Do not invent anything that is not in the material.
 
 RULES FOR "questions":
-- Write exactly 30 questions based ONLY on the material.
+- Write between 10 and 40 questions based ONLY on the material.
+- Short notes (few pages / little text): about 10–15 questions.
+- Medium notes: about 20–25 questions.
+- Long notes (many pages or dense content): about 30–40 questions.
+- Never invent topics that are not in the material just to reach a number. Prefer fewer good questions over padded ones.
 - Exactly 4 options per question.
 - All four options must be plausible and closely related, so the student has real doubt.
 - Options must be similar in length. The correct answer must not be longer or shorter than the others.
 - Test understanding, not just memorising definitions.
 - Keep wording clear and short.
 - Spread the correct answer across positions (do not always use the first option).
+- correct_index must be the 0-based index of the true answer in the options array you return.
 
 If the material has no readable content, return {"topics": [], "notes": "", "questions": []}.`
 
@@ -166,7 +171,7 @@ type Section = { label: string; text: string }
 
 const CHUNK_CHARS = 24_000 // about 6,000 words per AI call
 const MAX_CHUNKS = 4 // at most 4 calls per upload, to protect the free daily quota
-const MAX_QUESTIONS = 30
+const MAX_QUESTIONS = 40
 
 // Cuts the material into labelled sections (pages, slides, sheets or plain parts)
 function toSections(input: Exclude<MaterialInput, { type: "inline" }>): Section[] {
@@ -289,8 +294,8 @@ async function analyzeSections(
   const chunks = makeChunks(sections)
   const totalChars = sections.reduce((n, s) => n + s.text.length, 0)
 
-  // Short material gets fewer questions (about one per 250 characters, between 8 and 30)
-  const wanted = Math.min(MAX_QUESTIONS, Math.max(8, Math.round(totalChars / 250)))
+  // Scale with length: ~1 question per 350 chars, between 10 and 40
+  const wanted = Math.min(MAX_QUESTIONS, Math.max(10, Math.round(totalChars / 350)))
   const perChunk = chunks.map((_, i) => Math.floor(wanted / chunks.length) + (i < wanted % chunks.length ? 1 : 0))
 
   let done = 0
