@@ -2,13 +2,12 @@
 "use client"
 
 import { useState, useRef, useEffect, Suspense } from "react"
-import { useSearchParams } from "next/navigation"
+import { useSearchParams, useRouter } from "next/navigation"
 import { BottomNav } from "@/components/bottom-nav"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { Send, Loader2, Check, Folder, FolderOpen, ChevronDown, FileText } from "lucide-react"
+import { Send, Loader2, ArrowLeft, Check, Folder, FolderOpen, ChevronDown, FileText } from "lucide-react"
 import Link from "next/link"
-import { BackButton } from "@/components/back-button"
 import { createClient } from "@/lib/supabase/client"
 import { Markdown } from "@/components/markdown"
 import { HeadphonesButton } from "@/components/music/headphones-button"
@@ -156,6 +155,7 @@ function CourseFolders() {
 
 function TutorContent() {
   const searchParams = useSearchParams()
+  const router = useRouter()
   const materialId = searchParams.get("material")
 
   const [level, setLevel] = useState<"primary" | "normal" | "exam">("primary")
@@ -270,7 +270,7 @@ function TutorContent() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: `Teach me this topic thoroughly: "${topic}". Material: ${materialTitle || "lecture notes"}. Start with a clear explanation.`,
+          message: `Teach me this topic thoroughly: "${topic}". Material: ${materialTitle || "lecture notes"}. Cover the key ideas from my notes, give a clear worked example if there is any calculation or procedure, then give me 2 practice questions to try (do not reveal full answers yet).`,
           level,
           context,
           studentName,
@@ -306,8 +306,8 @@ function TutorContent() {
     setPhase("topics")
   }
 
-  const send = async () => {
-    const text = input.trim()
+  const send = async (preset?: string) => {
+    const text = (preset ?? input).trim()
     if (!text || loading) return
 
     setInput("")
@@ -359,7 +359,9 @@ function TutorContent() {
       <div className="min-h-screen pb-24">
         <div className="max-w-lg mx-auto px-5 pt-6">
           <div className="flex items-center gap-3 mb-6">
-            <BackButton fallback="/home" />
+            <button onClick={() => router.back()} className="p-2 -ml-2 rounded-full hover:bg-muted">
+              <ArrowLeft size={20} />
+            </button>
             <div className="min-w-0">
               <p className="font-semibold truncate">{materialTitle || "Material"}</p>
               <p className="text-xs text-gray-500">Choose a topic to study</p>
@@ -438,7 +440,12 @@ function TutorContent() {
     <div className="min-h-screen pb-24 flex flex-col">
       <div className="max-w-lg mx-auto w-full px-5 pt-6 flex-1 flex flex-col">
         <div className="flex items-center gap-3 mb-3">
-          <BackButton onClick={markTopicDone} />
+          <button
+            onClick={markTopicDone}
+            className="p-2 -ml-2 rounded-full hover:bg-muted"
+          >
+            <ArrowLeft size={20} />
+          </button>
           <div className="min-w-0 flex-1">
             <p className="font-semibold text-sm truncate">{activeTopic}</p>
             <p className="text-xs text-gray-500 truncate">{materialTitle}</p>
@@ -485,6 +492,32 @@ function TutorContent() {
           )}
           <div ref={bottomRef} />
         </div>
+
+        {!loading && messages.length > 0 && (
+          <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1">
+            {[
+              "Give me 2 practice questions from my notes (hide answers until I try)",
+              "Work through a calculation or procedure step by step with an example",
+              "What do examiners usually ask on this topic?",
+            ].map((chip) => (
+              <button
+                key={chip}
+                type="button"
+                disabled={loading}
+                onClick={() => {
+                  void send(chip)
+                }}
+                className="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium bg-muted text-foreground border border-border hover:border-primary/40"
+              >
+                {chip.includes("practice")
+                  ? "Practice questions"
+                  : chip.includes("calculation")
+                    ? "Worked example"
+                    : "Exam tips"}
+              </button>
+            ))}
+          </div>
+        )}
 
         <div className="flex gap-2 pt-2">
           <input
