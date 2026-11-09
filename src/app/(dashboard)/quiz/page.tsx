@@ -6,7 +6,6 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { Flag, Loader2, Minus, Plus, Timer } from "lucide-react"
-import { BackButton } from "@/components/back-button"
 import { createClient } from "@/lib/supabase/client"
 import { LAST_RESULT_KEY, type LastResult, type ReviewItem } from "@/lib/quiz-review"
 import { buildAttemptPaper, type QuizQuestion } from "@/lib/quiz-shuffle"
@@ -312,14 +311,11 @@ function QuizContent() {
     return (
       <div className="min-h-screen bg-background flex flex-col">
         <div className="flex-1 px-5 py-8 max-w-lg mx-auto w-full space-y-6">
-          <div className="flex items-start gap-3">
-            <BackButton fallback="/courses" className="mt-0.5" />
-            <div>
-              <h1 className="text-2xl font-semibold">{title}</h1>
-              <p className="text-sm text-gray-500 mt-1">
-                Choose how many questions you want and how much time you get.
-              </p>
-            </div>
+          <div>
+            <h1 className="text-2xl font-semibold">{title}</h1>
+            <p className="text-sm text-gray-500 mt-1">
+              Choose how many questions you want and how much time you get.
+            </p>
           </div>
 
           {/* How many questions */}
