@@ -3,12 +3,13 @@
 
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { Loader2, LogOut } from "lucide-react"
+import Link from "next/link"
+import { Loader2, LogOut, ExternalLink } from "lucide-react"
 import { BackButton } from "@/components/back-button"
 import { BottomNav } from "@/components/bottom-nav"
 import { Button } from "@/components/ui/button"
 import { createClient } from "@/lib/supabase/client"
-import { APP_VERSION } from "@/lib/app-info"
+import { APP_VERSION, APP_BRAND } from "@/lib/app-info"
 import { ThemeToggle } from "@/components/theme-toggle"
 
 type ProfileData = {
@@ -64,7 +65,6 @@ export default function ProfilePage() {
         .single()
 
       if (data) {
-        // Older accounts may have "Other" saved: treat it as not set so they can enter the real one
         const savedDept = data.department === "Other" ? null : data.department
         setProfile({ ...data, department: savedDept })
       }
@@ -126,6 +126,41 @@ export default function ProfilePage() {
               <ThemeToggle />
             </div>
 
+            {/* About / credits */}
+            <div className="rounded-2xl border border-border bg-card p-4 mb-4 space-y-3">
+              <p className="text-sm font-medium">About</p>
+              <p className="text-sm text-foreground">{APP_BRAND.byline}</p>
+              <p className="text-xs text-gray-500 leading-relaxed">
+                Built by {APP_BRAND.builderName}. {APP_BRAND.builderRoles}.
+              </p>
+              <div className="flex flex-wrap gap-2 text-xs">
+                <a
+                  href={APP_BRAND.whatsappLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-1.5 rounded-full bg-muted font-medium hover:bg-primary/10"
+                >
+                  WhatsApp
+                </a>
+                <a
+                  href={APP_BRAND.xLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-3 py-1.5 rounded-full bg-muted font-medium hover:bg-primary/10"
+                >
+                  {APP_BRAND.xHandle}
+                </a>
+              </div>
+              <Link
+                href="/hire"
+                className="flex items-center justify-center gap-2 h-11 rounded-xl bg-primary text-white text-sm font-semibold"
+              >
+                Got a job for me??
+                <ExternalLink size={14} />
+              </Link>
+              <p className="text-[11px] text-gray-400">{APP_BRAND.copyright}</p>
+            </div>
+
             <div className="rounded-2xl border border-border bg-card p-4 mb-4 space-y-2">
               <p className="text-sm font-medium">Help</p>
               <p className="text-xs text-gray-500">
@@ -142,17 +177,22 @@ export default function ProfilePage() {
 
             <Button
               variant="outline"
-              className="w-full gap-2"
-              onClick={logOut}
+              className="w-full mb-4 text-danger border-danger/30 hover:bg-red-50"
               disabled={signingOut}
+              onClick={logOut}
             >
-              <LogOut size={18} />
-              {signingOut ? "Logging out..." : "Log out"}
+              {signingOut ? (
+                <Loader2 className="animate-spin" size={18} />
+              ) : (
+                <>
+                  <LogOut size={18} className="mr-2" />
+                  Sign out
+                </>
+              )}
             </Button>
           </>
         )}
       </div>
-
       <BottomNav />
     </div>
   )
