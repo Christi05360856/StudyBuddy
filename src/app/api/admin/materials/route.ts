@@ -22,20 +22,27 @@ export async function GET() {
     const userIds = [...new Set((materials ?? []).map((m) => m.user_id))]
     const courseIds = [...new Set((materials ?? []).map((m) => m.course_id).filter(Boolean))]
 
-    const [{ data: profiles }, { data: courses }, { data: qCounts }] = await Promise.all([
+    const [profilesRes, coursesRes, questionsRes] = await Promise.all([
       userIds.length
         ? supabase.from("profiles").select("id, full_name").in("id", userIds)
-        : Promise.resolve({ data: [] as { id: string; full_name: string }[] }),
+        : Promise.resolve({ data: [] as { id: string; full_name: string }[], error: null }),
       courseIds.length
         ? supabase.from("courses").select("id, code, title").in("id", courseIds)
-        : Promise.resolve({ data: [] as { id: string; code: string; title: string | null }[] }),
+        : Promise.resolve({
+            data: [] as { id: string; code: string; title: string | null }[],
+            error: null,
+          }),
       supabase.from("questions").select("material_id"),
     ])
 
-    const nameBy = new Map((profiles ?? []).map((p) => [p.id, p.full_name]))
-    const courseBy = new Map((courses ?? []).map((c) => [c.id, c]))
+    const profiles = profilesRes.data ?? []
+    const courses = coursesRes.data ?? []
+    const questionRows = questionsRes.data ?? []
+
+    const nameBy = new Map(profiles.map((p) => [p.id, p.full_name]))
+    const courseBy = new Map(courses.map((c) => [c.id, c]))
     const qBy = new Map<string, number>()
-    for (const q of qCounts.data ?? []) {
+    for (const q of questionRows) {
       qBy.set(q.material_id, (qBy.get(q.material_id) ?? 0) + 1)
     }
 
