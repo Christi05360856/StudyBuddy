@@ -182,7 +182,7 @@ function TutorContent() {
   const router = useRouter()
   const materialId = searchParams.get("material")
 
-  const [level, setLevel] = useState<"primary" | "normal" | "exam">("primary")
+  const [level, setLevel] = useState<"very_simple" | "standard" | "advanced" | "exam_ready">("standard")
   const [input, setInput] = useState("")
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
@@ -300,7 +300,7 @@ function TutorContent() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: `Teach me this topic thoroughly: "${topic}". Material: ${materialTitle || "lecture notes"}. Cover the key ideas from my notes, give a clear worked example if there is any calculation or procedure, then give me 2 practice questions to try (do not reveal full answers yet).`,
+          message: `Teach me this topic thoroughly: "${topic}". Cover the key ideas (what it is, why it matters, how it works), give a clear worked example if there is any calculation, procedure, or code, then give me 2 practice questions to try (do not reveal full answers yet).`,
           level,
           context,
           studentName,
@@ -404,13 +404,14 @@ function TutorContent() {
 
           <div className="flex gap-2 mb-6 flex-wrap">
             {[
-              { id: "primary", label: "Primary 2" },
-              { id: "normal", label: "Normal" },
-              { id: "exam", label: "Exam-ready" },
+              { id: "very_simple", label: "Very simple" },
+              { id: "standard", label: "Standard" },
+              { id: "advanced", label: "Advanced" },
+              { id: "exam_ready", label: "Exam ready" },
             ].map((l) => (
               <button
                 key={l.id}
-                onClick={() => setLevel(l.id as any)}
+                onClick={() => setLevel(l.id as "very_simple" | "standard" | "advanced" | "exam_ready")}
                 className={cn(
                   "px-3 py-1.5 rounded-full text-xs font-medium transition-colors",
                   level === l.id ? "bg-primary text-white" : "bg-muted text-gray-600"
@@ -488,13 +489,14 @@ function TutorContent() {
 
         <div className="flex gap-2 mb-4 flex-wrap">
           {[
-            { id: "primary", label: "Primary 2" },
-            { id: "normal", label: "Normal" },
-            { id: "exam", label: "Exam-ready" },
+            { id: "very_simple", label: "Very simple" },
+            { id: "standard", label: "Standard" },
+            { id: "advanced", label: "Advanced" },
+            { id: "exam_ready", label: "Exam ready" },
           ].map((l) => (
             <button
               key={l.id}
-              onClick={() => setLevel(l.id as any)}
+              onClick={() => setLevel(l.id as "very_simple" | "standard" | "advanced" | "exam_ready")}
               className={cn(
                 "px-3 py-1.5 rounded-full text-xs font-medium transition-colors",
                 level === l.id ? "bg-primary text-white" : "bg-muted text-gray-600"
@@ -530,9 +532,10 @@ function TutorContent() {
         {!loading && messages.length > 0 && (
           <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1">
             {[
-              "Give me 2 practice questions from my notes (hide answers until I try)",
+              "Give me 2 practice questions on this topic (hide answers until I try)",
               "Work through a calculation or procedure step by step with an example",
-              "What do examiners usually ask on this topic?",
+              "Explain this more simply with a different example",
+              "What should I focus on for exams on this topic?",
             ].map((chip) => (
               <button
                 key={chip}
@@ -547,7 +550,9 @@ function TutorContent() {
                   ? "Practice questions"
                   : chip.includes("calculation")
                     ? "Worked example"
-                    : "Exam tips"}
+                    : chip.includes("simply")
+                      ? "Explain simpler"
+                      : "Exam focus"}
               </button>
             ))}
           </div>
