@@ -13,6 +13,7 @@ import {
   buildTutorUserContent,
   normalizeLevel,
 } from "@/lib/ai/tutor-policy"
+import { formatChunksForTutor, retrieveMaterialChunks } from "@/lib/ai/retrieval"
 
 type ChatMessage = { role: "user" | "assistant"; content: string }
 
@@ -26,7 +27,6 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Please log in again." }, { status: 401 })
     }
 
-    // Daily limit — fail OPEN so a broken RPC never blocks the tutor
     const { data: allowed, error: creditError } = await supabase.rpc("consume_ai_credit", {
       feature: "tutor",
       daily_limit: AI_LIMITS.tutor,
@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
     if (creditError) {
       console.error("consume_ai_credit error:", creditError)
       if (!isMissingLimitSetup(creditError)) {
-        // still fail-open
+        // fail-open
       }
     } else if (allowed === false) {
       return NextResponse.json({ error: limitReachedMessage("tutor") }, { status: 429 })
@@ -64,17 +64,53 @@ export async function POST(req: NextRequest) {
       .map((m) => `${m.role === "user" ? "Student" : "Tutor"}: ${String(m.content).slice(0, 1500)}`)
       .join("\n\n")
 
-    const notes = typeof context === "string" ? context.slice(0, 18000) : ""
+    const summaryNotes = typeof context === "string" ? context.slice(0, 8000) : ""
+    const topicStr =
+      typeof topic === "string" && topic.trim() ? topic.trim().slice(0, 200) : ""
     const name =
       typeof studentName === "string"
         ? studentName.replace(/[^a-zA-Z\u00C0-\u024F' -]/g, "").trim().slice(0, 30)
         : ""
-    const topicStr =
-      typeof topic === "string" && topic.trim() ? topic.trim().slice(0, 200) : ""
+
+    // Phase 2: pull original passages when materialId is present
+    let sourceBlock = ""
+    let retrievalCount = 0
+    if (typeof materialId === "string" && materialId) {
+      // Ownership check — only retrieve for materials the student owns (RLS also enforces)
+      const { data: mat } = await supabase
+        .from("materials")
+        .select("id")
+        .eq("id", materialId)
+        .eq("user_id", user.id)
+        .maybeSingle()
+
+      if (mat) {
+        const query = [topicStr, message].filter(Boolean).join(" ").slice(0, 300)
+        const chunks = await retrieveMaterialChunks(supabase, {
+          materialId,
+          query,
+          limit: 6,
+        })
+        retrievalCount = chunks.length
+        sourceBlock = formatChunksForTutor(chunks)
+      }
+    }
+
+    // Prefer original passages; keep a short summary only as secondary context
+    let notesForTutor = ""
+    if (sourceBlock) {
+      notesForTutor =
+        sourceBlock +
+        (summaryNotes
+          ? `\n\n[Study summary — secondary; prefer the passages above if they conflict in wording]\n${summaryNotes.slice(0, 2500)}`
+          : "")
+    } else {
+      notesForTutor = summaryNotes
+    }
 
     const userContent = buildTutorUserContent({
       message: message.trim(),
-      notes,
+      notes: notesForTutor,
       topic: topicStr,
       transcript,
       studentName: name,
@@ -118,11 +154,11 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Backward-compatible contract for the current UI
     return NextResponse.json({
       reply: result.text,
       model: result.model,
       level: teachingLevel,
+      retrievedChunks: retrievalCount,
     })
   } catch (err) {
     console.error(err)
