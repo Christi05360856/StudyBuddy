@@ -15,6 +15,17 @@ import { HeadphonesButton } from "@/components/music/headphones-button"
 type Message = {
   role: "user" | "assistant"
   content: string
+  evaluation?: {
+    result: string
+    feedback: string
+    misconception?: { detected: boolean; label?: string; explanation?: string }
+  } | null
+  check?: {
+    questionId: string
+    prompt: string
+    answerType: "single_choice" | "short_text"
+    options?: { id: string; text: string }[]
+  } | null
 }
 
 type FolderCourse = { id: string; code: string; title: string | null }
@@ -177,6 +188,22 @@ function CourseFolders() {
   )
 }
 
+
+function extractCheck(data: {
+  lesson?: { blocks?: { type?: string; questionId?: string; prompt?: string; answerType?: string; options?: { id: string; text: string }[] }[] }
+}): Message["check"] {
+  const blocks = data?.lesson?.blocks
+  if (!Array.isArray(blocks)) return null
+  const c = blocks.find((b) => b.type === "understanding_check")
+  if (!c || !c.prompt || !c.questionId) return null
+  return {
+    questionId: c.questionId,
+    prompt: c.prompt,
+    answerType: c.answerType === "short_text" ? "short_text" : "single_choice",
+    options: c.options,
+  }
+}
+
 function TutorContent() {
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -198,6 +225,9 @@ function TutorContent() {
     setCompletedTopics(loadDoneTopics(materialId))
   }, [materialId])
   const [activeTopic, setActiveTopic] = useState<string | null>(null)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [pendingCheck, setPendingCheck] = useState<Message["check"]>(null)
+  const [checkBusy, setCheckBusy] = useState(false)
   const [loadingTopics, setLoadingTopics] = useState(false)
   const [phase, setPhase] = useState<"topics" | "chat">("topics")
 
@@ -300,7 +330,8 @@ function TutorContent() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: `Teach me this topic thoroughly: "${topic}". Cover the key ideas (what it is, why it matters, how it works), give a clear worked example if there is any calculation, procedure, or code, then give me 2 practice questions to try (do not reveal full answers yet).`,
+          action: "start_lesson",
+          message: `Teach me this topic thoroughly: "${topic}". Cover the key ideas (what it is, why it matters, how it works), give a clear worked example if there is any calculation, procedure, or code, then check my understanding once.`,
           level,
           context,
           studentName,
@@ -313,7 +344,16 @@ function TutorContent() {
       if (!res.ok || !data.reply) {
         throw new Error(data.error || "No reply from the AI.")
       }
-      setMessages([{ role: "assistant", content: data.reply }])
+      if (data.sessionId) setSessionId(data.sessionId)
+      const check = extractCheck(data)
+      setPendingCheck(check)
+      setMessages([
+        {
+          role: "assistant",
+          content: data.reply,
+          check,
+        },
+      ])
     } catch (err) {
       setMessages([
         {
@@ -337,6 +377,8 @@ function TutorContent() {
     }
     setActiveTopic(null)
     setMessages([])
+    setSessionId(null)
+    setPendingCheck(null)
     setPhase("topics")
   }
 
@@ -353,7 +395,9 @@ function TutorContent() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          message: activeTopic ? `[Topic: ${activeTopic}] ${text}` : text,
+          action: "student_message",
+          sessionId,
+          message: activeTopic ? text : text,
           level,
           context,
           studentName,
@@ -364,9 +408,17 @@ function TutorContent() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "Failed")
+      if (data.sessionId) setSessionId(data.sessionId)
+      const check = extractCheck(data)
+      setPendingCheck(check)
       setMessages((prev) => [
         ...prev,
-        { role: "assistant", content: data.reply || "No reply." },
+        {
+          role: "assistant",
+          content: data.reply || "No reply.",
+          check,
+          evaluation: data.evaluation || null,
+        },
       ])
     } catch (err) {
       setMessages((prev) => [
@@ -379,6 +431,112 @@ function TutorContent() {
       ])
     } finally {
       setLoading(false)
+    }
+  }
+
+
+  const sendAction = async (
+    action: "student_message" | "request_hint" | "request_reexplanation" | "recap",
+    text: string
+  ) => {
+    const trimmed = text.trim()
+    if (!trimmed || loading) return
+    setInput("")
+    setMessages((prev) => [...prev, { role: "user", content: trimmed }])
+    setLoading(true)
+    try {
+      const res = await fetch("/api/tutor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action,
+          sessionId,
+          message: trimmed,
+          level,
+          context,
+          studentName,
+          history: messages.slice(-8),
+          materialId,
+          topic: activeTopic || "general",
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "Failed")
+      if (data.sessionId) setSessionId(data.sessionId)
+      const check = extractCheck(data)
+      setPendingCheck(check)
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: data.reply || "No reply.",
+          check,
+          evaluation: data.evaluation || null,
+        },
+      ])
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content:
+            (err instanceof Error && err.message) || "Something went wrong. Please try again.",
+        },
+      ])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const submitCheckAnswer = async (questionId: string, text: string) => {
+    if (!text.trim() || checkBusy || loading) return
+    setCheckBusy(true)
+    setMessages((prev) => [...prev, { role: "user", content: text.trim() }])
+    setPendingCheck(null)
+    setLoading(true)
+    try {
+      const res = await fetch("/api/tutor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "submit_answer",
+          sessionId,
+          message: text.trim(),
+          answer: { questionId, text: text.trim() },
+          level,
+          context,
+          studentName,
+          history: messages.slice(-8),
+          materialId,
+          topic: activeTopic || "general",
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "Failed")
+      if (data.sessionId) setSessionId(data.sessionId)
+      const check = extractCheck(data)
+      setPendingCheck(check)
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: data.reply || data.evaluation?.feedback || "No reply.",
+          check,
+          evaluation: data.evaluation || null,
+        },
+      ])
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content:
+            (err instanceof Error && err.message) || "Could not check that answer. Try again.",
+        },
+      ])
+    } finally {
+      setLoading(false)
+      setCheckBusy(false)
     }
   }
 
@@ -509,16 +667,72 @@ function TutorContent() {
 
         <div className="flex-1 space-y-4 overflow-y-auto pb-4 min-h-[200px]">
           {messages.map((m, i) => (
-            <div
-              key={i}
-              className={cn(
-                "max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed",
-                m.role === "user"
-                  ? "ml-auto bg-primary text-white whitespace-pre-wrap"
-                  : "bg-card border border-border"
+            <div key={i} className="space-y-2">
+              <div
+                className={cn(
+                  "max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed",
+                  m.role === "user"
+                    ? "ml-auto bg-primary text-white whitespace-pre-wrap"
+                    : "bg-card border border-border"
+                )}
+              >
+                {m.role === "user" ? m.content : <Markdown text={m.content} />}
+              </div>
+              {m.role === "assistant" && m.evaluation && (
+                <div
+                  className={cn(
+                    "max-w-[95%] rounded-2xl border px-4 py-3 text-sm",
+                    m.evaluation.result === "correct"
+                      ? "border-green-200 bg-green-50 dark:bg-green-950/30"
+                      : m.evaluation.result === "partially_correct"
+                        ? "border-amber-200 bg-amber-50 dark:bg-amber-950/30"
+                        : "border-red-200 bg-red-50 dark:bg-red-950/30"
+                  )}
+                >
+                  <p className="text-xs font-semibold uppercase tracking-wide mb-1">
+                    {m.evaluation.result === "correct"
+                      ? "Correct"
+                      : m.evaluation.result === "partially_correct"
+                        ? "Partly correct"
+                        : "Not quite"}
+                  </p>
+                  <p className="text-sm leading-relaxed">{m.evaluation.feedback}</p>
+                  {m.evaluation.misconception?.detected && m.evaluation.misconception.explanation && (
+                    <p className="text-xs text-gray-600 mt-2">
+                      {m.evaluation.misconception.label
+                        ? `${m.evaluation.misconception.label}: `
+                        : ""}
+                      {m.evaluation.misconception.explanation}
+                    </p>
+                  )}
+                </div>
               )}
-            >
-              {m.role === "user" ? m.content : <Markdown text={m.content} />}
+              {m.role === "assistant" && m.check && i === messages.length - 1 && pendingCheck && (
+                <div className="max-w-[95%] rounded-2xl border border-primary/30 bg-card px-4 py-4 space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+                    Check your understanding
+                  </p>
+                  <p className="text-sm font-medium leading-relaxed">{m.check.prompt}</p>
+                  {m.check.options && m.check.options.length > 0 ? (
+                    <div className="space-y-2">
+                      {m.check.options.map((o) => (
+                        <button
+                          key={o.id}
+                          type="button"
+                          disabled={checkBusy || loading}
+                          onClick={() => void submitCheckAnswer(m.check!.questionId, o.text)}
+                          className="w-full text-left px-3 py-2.5 rounded-xl border border-border text-sm hover:border-primary/40 disabled:opacity-50"
+                        >
+                          <span className="font-semibold text-primary mr-2">{o.id}.</span>
+                          {o.text}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-gray-500">Type your answer in the box below and send.</p>
+                  )}
+                </div>
+              )}
             </div>
           ))}
           {loading && (
@@ -532,27 +746,21 @@ function TutorContent() {
         {!loading && messages.length > 0 && (
           <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1">
             {[
-              "Give me 2 practice questions on this topic (hide answers until I try)",
-              "Work through a calculation or procedure step by step with an example",
-              "Explain this more simply with a different example",
-              "What should I focus on for exams on this topic?",
+              { label: "Explain simpler", action: "request_reexplanation" as const, text: "Explain this more simply with a different example" },
+              { label: "Hint", action: "request_hint" as const, text: "Give me a hint — not the full answer" },
+              { label: "Recap", action: "recap" as const, text: "Recap the key points so far" },
+              { label: "Worked example", action: "student_message" as const, text: "Work through a calculation or procedure step by step with an example" },
             ].map((chip) => (
               <button
-                key={chip}
+                key={chip.label}
                 type="button"
                 disabled={loading}
                 onClick={() => {
-                  void send(chip)
+                  void sendAction(chip.action, chip.text)
                 }}
                 className="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium bg-muted text-foreground border border-border hover:border-primary/40"
               >
-                {chip.includes("practice")
-                  ? "Practice questions"
-                  : chip.includes("calculation")
-                    ? "Worked example"
-                    : chip.includes("simply")
-                      ? "Explain simpler"
-                      : "Exam focus"}
+                {chip.label}
               </button>
             ))}
           </div>
