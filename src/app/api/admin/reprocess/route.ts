@@ -8,6 +8,8 @@ import { isAdminRequest } from "@/lib/admin/session"
 import { createAdminClient } from "@/lib/supabase/admin"
 import { analyzeMaterial } from "@/lib/ai/generate-questions"
 import { extractContent } from "@/lib/extract-content"
+import { buildSourceChunks } from "@/lib/ai/source-text"
+import { replaceMaterialChunks } from "@/lib/ai/retrieval"
 
 export const maxDuration = 60
 export const runtime = "nodejs"
@@ -29,7 +31,7 @@ export async function POST(req: NextRequest) {
 
     const { data: material, error: matError } = await supabase
       .from("materials")
-      .select("id, file_path")
+      .select("id, file_path, user_id")
       .eq("id", materialId)
       .single()
 
@@ -120,6 +122,22 @@ export async function POST(req: NextRequest) {
       .eq("id", materialId)
 
     if (updateError) return fail("Could not update material: " + updateError.message)
+
+
+    try {
+      const sourceChunks = buildSourceChunks(extracted.input)
+      const ownerId = typeof material.user_id === "string" ? material.user_id : ""
+      if (ownerId) {
+        const chunkResult = await replaceMaterialChunks(supabase, {
+          materialId,
+          userId: ownerId,
+          chunks: sourceChunks,
+        })
+        if (!chunkResult.ok) console.warn("admin material_chunks:", chunkResult.error)
+      }
+    } catch (e) {
+      console.warn("admin material_chunks exception:", e)
+    }
 
     await setProgress("done", 100)
 
