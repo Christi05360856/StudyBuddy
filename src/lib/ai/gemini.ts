@@ -54,6 +54,7 @@ async function callFallback(options: {
   json?: boolean
   maxOutputTokens?: number
   timeoutMs: number
+  systemInstruction?: string
 }): Promise<GeminiResult | null> {
   const apiKey = process.env.FALLBACK_LLM_API_KEY
   const model = process.env.FALLBACK_LLM_MODEL?.trim()
@@ -66,7 +67,10 @@ async function callFallback(options: {
     /\/$/,
     ""
   )
-  const prompt = options.parts.map((p) => ("text" in p ? p.text : "")).join("\n\n")
+  const bodyText = options.parts.map((p) => ("text" in p ? p.text : "")).join("\n\n")
+  const prompt = options.systemInstruction
+    ? `${options.systemInstruction}\n\n---\n\n${bodyText}`
+    : bodyText
 
   const send = async (withJsonMode: boolean) => {
     const controller = new AbortController()
@@ -121,6 +125,8 @@ export async function callGemini(options: {
   json?: boolean
   maxOutputTokens?: number
   timeoutMs?: number
+  /** Persistent system instruction (Gemini systemInstruction field). */
+  systemInstruction?: string
 }): Promise<GeminiResult> {
   const apiKey = process.env.GEMINI_API_KEY
   const errors: string[] = []
@@ -146,6 +152,13 @@ export async function callGemini(options: {
             },
             body: JSON.stringify({
               contents: [{ role: "user", parts: options.parts }],
+              ...(options.systemInstruction
+                ? {
+                    systemInstruction: {
+                      parts: [{ text: options.systemInstruction }],
+                    },
+                  }
+                : {}),
               generationConfig: {
                 maxOutputTokens: options.maxOutputTokens ?? 8192,
                 ...(options.json ? { responseMimeType: "application/json" } : {}),
@@ -204,6 +217,7 @@ export async function callGemini(options: {
     json: options.json,
     maxOutputTokens: options.maxOutputTokens,
     timeoutMs: Math.max(8000, Math.min(25000, deadline - Date.now())),
+    systemInstruction: options.systemInstruction,
   })
   if (fallback?.ok) return fallback
   if (fallback && !fallback.ok) errors.push(fallback.error)
