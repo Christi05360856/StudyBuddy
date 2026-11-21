@@ -6,11 +6,23 @@ import { useSearchParams, useRouter } from "next/navigation"
 import { BottomNav } from "@/components/bottom-nav"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { Send, Loader2, ArrowLeft, Check, Folder, FolderOpen, ChevronDown, FileText } from "lucide-react"
+import { Send, Loader2, ArrowLeft, Check, Folder, FolderOpen, ChevronDown, FileText, X } from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
-import { Markdown } from "@/components/markdown"
 import { HeadphonesButton } from "@/components/music/headphones-button"
+import {
+  EvaluationCard,
+  UnderstandingCheckCard,
+  TutorBubble,
+  TutorTyping,
+} from "@/components/tutor/lesson-blocks"
+import {
+  LevelChips,
+  LessonProgressBar,
+  TopicOutline,
+  OutlineToggleButton,
+  type LessonLevel,
+} from "@/components/tutor/lesson-sidebar"
 
 type Message = {
   role: "user" | "assistant"
@@ -204,12 +216,22 @@ function extractCheck(data: {
   }
 }
 
+function stageFrom(data: { state?: { currentStage?: string } | null }): string | null {
+  const s = data?.state?.currentStage
+  return typeof s === "string" && s ? s : null
+}
+
+function prettyStage(stage: string | null): string | undefined {
+  if (!stage) return undefined
+  return stage.replace(/_/g, " ")
+}
+
 function TutorContent() {
   const searchParams = useSearchParams()
   const router = useRouter()
   const materialId = searchParams.get("material")
 
-  const [level, setLevel] = useState<"very_simple" | "standard" | "advanced" | "exam_ready">("standard")
+  const [level, setLevel] = useState<LessonLevel>("standard")
   const [input, setInput] = useState("")
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
@@ -228,6 +250,9 @@ function TutorContent() {
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [pendingCheck, setPendingCheck] = useState<Message["check"]>(null)
   const [checkBusy, setCheckBusy] = useState(false)
+  const [outlineOpen, setOutlineOpen] = useState(false)
+  const [lessonStage, setLessonStage] = useState<string | null>(null)
+  const [materialFileLabel, setMaterialFileLabel] = useState<string>("Lecture note")
   const [loadingTopics, setLoadingTopics] = useState(false)
   const [phase, setPhase] = useState<"topics" | "chat">("topics")
 
@@ -347,6 +372,10 @@ function TutorContent() {
       if (data.sessionId) setSessionId(data.sessionId)
       const check = extractCheck(data)
       setPendingCheck(check)
+      {
+        const st = stageFrom(data)
+        if (st) setLessonStage(st)
+      }
       setMessages([
         {
           role: "assistant",
@@ -379,6 +408,8 @@ function TutorContent() {
     setMessages([])
     setSessionId(null)
     setPendingCheck(null)
+    setLessonStage(null)
+    setOutlineOpen(false)
     setPhase("topics")
   }
 
@@ -411,6 +442,10 @@ function TutorContent() {
       if (data.sessionId) setSessionId(data.sessionId)
       const check = extractCheck(data)
       setPendingCheck(check)
+      {
+        const st = stageFrom(data)
+        if (st) setLessonStage(st)
+      }
       setMessages((prev) => [
         ...prev,
         {
@@ -465,6 +500,10 @@ function TutorContent() {
       if (data.sessionId) setSessionId(data.sessionId)
       const check = extractCheck(data)
       setPendingCheck(check)
+      {
+        const st = stageFrom(data)
+        if (st) setLessonStage(st)
+      }
       setMessages((prev) => [
         ...prev,
         {
@@ -516,6 +555,10 @@ function TutorContent() {
       if (data.sessionId) setSessionId(data.sessionId)
       const check = extractCheck(data)
       setPendingCheck(check)
+      {
+        const st = stageFrom(data)
+        if (st) setLessonStage(st)
+      }
       setMessages((prev) => [
         ...prev,
         {
@@ -560,24 +603,8 @@ function TutorContent() {
             </div>
           </div>
 
-          <div className="flex gap-2 mb-6 flex-wrap">
-            {[
-              { id: "very_simple", label: "Very simple" },
-              { id: "standard", label: "Standard" },
-              { id: "advanced", label: "Advanced" },
-              { id: "exam_ready", label: "Exam ready" },
-            ].map((l) => (
-              <button
-                key={l.id}
-                onClick={() => setLevel(l.id as "very_simple" | "standard" | "advanced" | "exam_ready")}
-                className={cn(
-                  "px-3 py-1.5 rounded-full text-xs font-medium transition-colors",
-                  level === l.id ? "bg-primary text-white" : "bg-muted text-gray-600"
-                )}
-              >
-                {l.label}
-              </button>
-            ))}
+          <div className="mb-6">
+            <LevelChips level={level} onChange={setLevel} />
           </div>
 
           {loadingTopics ? (
@@ -628,164 +655,192 @@ function TutorContent() {
     )
   }
 
-  // Chat phase for a topic
+  // Chat phase for a topic — Phase 4 lesson shell
+  const completedCount = completedTopics.size
+  const totalTopics = Math.max(topics.length, 1)
+  const progressCurrent = activeTopic && completedTopics.has(activeTopic)
+    ? Math.min(completedCount, totalTopics)
+    : Math.min(completedCount, totalTopics)
+
   return (
-    <div className="min-h-screen pb-24 flex flex-col">
-      <div className="max-w-lg mx-auto w-full px-5 pt-6 flex-1 flex flex-col">
-        <div className="flex items-center gap-3 mb-3">
+    <div className="min-h-screen pb-24 flex flex-col bg-background">
+      {/* Top bar */}
+      <header className="sticky top-0 z-20 border-b border-border bg-card/95 backdrop-blur-md">
+        <div className="max-w-5xl mx-auto px-4 h-14 flex items-center gap-3">
           <button
+            type="button"
             onClick={markTopicDone}
-            className="p-2 -ml-2 rounded-full hover:bg-muted"
+            className="p-2 -ml-1 rounded-full hover:bg-muted"
+            aria-label="Back to topics"
           >
             <ArrowLeft size={20} />
           </button>
           <div className="min-w-0 flex-1">
+            <p className="text-[11px] text-gray-500 truncate">AI Tutor · {materialFileLabel}</p>
             <p className="font-semibold text-sm truncate">{activeTopic}</p>
-            <p className="text-xs text-gray-500 truncate">{materialTitle}</p>
+          </div>
+          <span className="hidden sm:inline-flex text-[10px] font-semibold uppercase tracking-wide px-2.5 py-1 rounded-full bg-primary/10 text-primary">
+            Interactive lesson
+          </span>
+          <div className="lg:hidden">
+            <OutlineToggleButton open={outlineOpen} onClick={() => setOutlineOpen((v) => !v)} />
           </div>
         </div>
+      </header>
 
-        <div className="flex gap-2 mb-4 flex-wrap">
-          {[
-            { id: "very_simple", label: "Very simple" },
-            { id: "standard", label: "Standard" },
-            { id: "advanced", label: "Advanced" },
-            { id: "exam_ready", label: "Exam ready" },
-          ].map((l) => (
-            <button
-              key={l.id}
-              onClick={() => setLevel(l.id as "very_simple" | "standard" | "advanced" | "exam_ready")}
-              className={cn(
-                "px-3 py-1.5 rounded-full text-xs font-medium transition-colors",
-                level === l.id ? "bg-primary text-white" : "bg-muted text-gray-600"
-              )}
-            >
-              {l.label}
+      {/* Mobile outline sheet */}
+      {outlineOpen && (
+        <div className="lg:hidden border-b border-border bg-card px-4 py-4 space-y-4 max-h-[50vh] overflow-y-auto">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-semibold">Your lesson</p>
+            <button type="button" className="p-1.5 rounded-lg hover:bg-muted" onClick={() => setOutlineOpen(false)}>
+              <X size={16} />
             </button>
-          ))}
+          </div>
+          <div className="text-xs text-gray-500 space-y-1">
+            <p>
+              <span className="font-medium text-foreground">Material: </span>
+              {materialFileLabel}
+            </p>
+          </div>
+          <LevelChips level={level} onChange={setLevel} disabled={loading} />
+          <LessonProgressBar
+            current={progressCurrent}
+            total={totalTopics}
+            stageLabel={prettyStage(lessonStage)}
+          />
+          <div>
+            <p className="text-xs font-medium text-gray-500 mb-2">Lesson outline</p>
+            <TopicOutline
+              topics={topics}
+              active={activeTopic}
+              completed={completedTopics}
+              disabled={loading}
+              onSelect={(t) => {
+                setOutlineOpen(false)
+                void startTopic(t)
+              }}
+            />
+          </div>
         </div>
+      )}
 
-        <div className="flex-1 space-y-4 overflow-y-auto pb-4 min-h-[200px]">
-          {messages.map((m, i) => (
-            <div key={i} className="space-y-2">
-              <div
-                className={cn(
-                  "max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed",
-                  m.role === "user"
-                    ? "ml-auto bg-primary text-white whitespace-pre-wrap"
-                    : "bg-card border border-border"
-                )}
-              >
-                {m.role === "user" ? m.content : <Markdown text={m.content} />}
+      <div className="max-w-5xl mx-auto w-full flex-1 flex gap-0 lg:gap-6 px-0 lg:px-4">
+        {/* Desktop sidebar */}
+        <aside className="hidden lg:flex w-72 shrink-0 flex-col border-r border-border bg-card/50 px-4 py-5 sticky top-14 h-[calc(100vh-3.5rem-5rem)] overflow-y-auto">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500 mb-3">Your lesson</p>
+          <div className="rounded-2xl border border-border bg-card p-3 mb-4 space-y-2">
+            <p className="text-[11px] text-gray-500">Material</p>
+            <p className="text-sm font-medium leading-snug">{materialFileLabel}</p>
+          </div>
+          <p className="text-[11px] text-gray-500 mb-2">Teaching level</p>
+          <div className="mb-4">
+            <LevelChips level={level} onChange={setLevel} disabled={loading} />
+          </div>
+          <div className="mb-4">
+            <LessonProgressBar
+              current={progressCurrent}
+              total={totalTopics}
+              stageLabel={prettyStage(lessonStage)}
+            />
+          </div>
+          <p className="text-[11px] text-gray-500 mb-2">Lesson outline</p>
+          <TopicOutline
+            topics={topics}
+            active={activeTopic}
+            completed={completedTopics}
+            disabled={loading}
+            onSelect={(t) => void startTopic(t)}
+          />
+        </aside>
+
+        {/* Teaching canvas */}
+        <main className="flex-1 min-w-0 flex flex-col px-4 pt-4 pb-3">
+          <div className="mb-3 lg:hidden">
+            <LevelChips level={level} onChange={setLevel} disabled={loading} />
+          </div>
+
+          <div className="flex-1 space-y-4 overflow-y-auto pb-4 min-h-[220px]">
+            {messages.length === 0 && !loading && (
+              <div className="rounded-2xl border border-dashed border-border px-4 py-10 text-center text-sm text-gray-500">
+                Starting your lesson…
               </div>
-              {m.role === "assistant" && m.evaluation && (
-                <div
-                  className={cn(
-                    "max-w-[95%] rounded-2xl border px-4 py-3 text-sm",
-                    m.evaluation.result === "correct"
-                      ? "border-green-200 bg-green-50 dark:bg-green-950/30"
-                      : m.evaluation.result === "partially_correct"
-                        ? "border-amber-200 bg-amber-50 dark:bg-amber-950/30"
-                        : "border-red-200 bg-red-50 dark:bg-red-950/30"
+            )}
+            {messages.map((m, i) => (
+              <div key={i} className="space-y-2">
+                <TutorBubble role={m.role} content={m.content} />
+                {m.role === "assistant" && m.evaluation && (
+                  <EvaluationCard evaluation={m.evaluation} />
+                )}
+                {m.role === "assistant" &&
+                  m.check &&
+                  i === messages.length - 1 &&
+                  pendingCheck && (
+                    <UnderstandingCheckCard
+                      check={m.check}
+                      disabled={checkBusy || loading}
+                      onAnswer={(qid, text) => void submitCheckAnswer(qid, text)}
+                    />
                   )}
+              </div>
+            ))}
+            {loading && <TutorTyping />}
+            <div ref={bottomRef} />
+          </div>
+
+          {/* Quick actions */}
+          {!loading && messages.length > 0 && (
+            <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1">
+              {(
+                [
+                  { label: "Explain simpler", action: "request_reexplanation" as const, text: "Explain this more simply with a different example" },
+                  { label: "Hint", action: "request_hint" as const, text: "Give me a hint — not the full answer" },
+                  { label: "Recap", action: "recap" as const, text: "Recap the key points so far" },
+                  { label: "Worked example", action: "student_message" as const, text: "Work through a calculation or procedure step by step with an example" },
+                ] as const
+              ).map((chip) => (
+                <button
+                  key={chip.label}
+                  type="button"
+                  disabled={loading}
+                  onClick={() => void sendAction(chip.action, chip.text)}
+                  className="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium bg-muted text-foreground border border-border hover:border-primary/40"
                 >
-                  <p className="text-xs font-semibold uppercase tracking-wide mb-1">
-                    {m.evaluation.result === "correct"
-                      ? "Correct"
-                      : m.evaluation.result === "partially_correct"
-                        ? "Partly correct"
-                        : "Not quite"}
-                  </p>
-                  <p className="text-sm leading-relaxed">{m.evaluation.feedback}</p>
-                  {m.evaluation.misconception?.detected && m.evaluation.misconception.explanation && (
-                    <p className="text-xs text-gray-600 mt-2">
-                      {m.evaluation.misconception.label
-                        ? `${m.evaluation.misconception.label}: `
-                        : ""}
-                      {m.evaluation.misconception.explanation}
-                    </p>
-                  )}
-                </div>
-              )}
-              {m.role === "assistant" && m.check && i === messages.length - 1 && pendingCheck && (
-                <div className="max-w-[95%] rounded-2xl border border-primary/30 bg-card px-4 py-4 space-y-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-primary">
-                    Check your understanding
-                  </p>
-                  <p className="text-sm font-medium leading-relaxed">{m.check.prompt}</p>
-                  {m.check.options && m.check.options.length > 0 ? (
-                    <div className="space-y-2">
-                      {m.check.options.map((o) => (
-                        <button
-                          key={o.id}
-                          type="button"
-                          disabled={checkBusy || loading}
-                          onClick={() => void submitCheckAnswer(m.check!.questionId, o.text)}
-                          className="w-full text-left px-3 py-2.5 rounded-xl border border-border text-sm hover:border-primary/40 disabled:opacity-50"
-                        >
-                          <span className="font-semibold text-primary mr-2">{o.id}.</span>
-                          {o.text}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-xs text-gray-500">Type your answer in the box below and send.</p>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-          {loading && (
-            <div className="bg-card border border-border rounded-2xl px-4 py-3 w-fit">
-              <Loader2 size={18} className="animate-spin text-primary" />
+                  {chip.label}
+                </button>
+              ))}
             </div>
           )}
-          <div ref={bottomRef} />
-        </div>
 
-        {!loading && messages.length > 0 && (
-          <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1">
-            {[
-              { label: "Explain simpler", action: "request_reexplanation" as const, text: "Explain this more simply with a different example" },
-              { label: "Hint", action: "request_hint" as const, text: "Give me a hint — not the full answer" },
-              { label: "Recap", action: "recap" as const, text: "Recap the key points so far" },
-              { label: "Worked example", action: "student_message" as const, text: "Work through a calculation or procedure step by step with an example" },
-            ].map((chip) => (
-              <button
-                key={chip.label}
-                type="button"
-                disabled={loading}
-                onClick={() => {
-                  void sendAction(chip.action, chip.text)
-                }}
-                className="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium bg-muted text-foreground border border-border hover:border-primary/40"
-              >
-                {chip.label}
-              </button>
-            ))}
+          {/* Composer */}
+          <div className="flex gap-2 pt-1">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && void send()}
+              placeholder="Ask a question or type an answer…"
+              disabled={loading}
+              className="flex-1 h-12 rounded-xl border border-border bg-card px-4 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
+              aria-label="Message the tutor"
+            />
+            <Button
+              onClick={() => void send()}
+              disabled={loading || !input.trim()}
+              className="h-12 w-12 rounded-xl p-0"
+              aria-label="Send"
+            >
+              <Send size={18} />
+            </Button>
           </div>
-        )}
 
-        <div className="flex gap-2 pt-2">
-          <input
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send()}
-            placeholder="Ask a follow-up question"
-            disabled={loading}
-            className="flex-1 h-12 rounded-xl border border-border px-4 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
-          />
-          <Button onClick={() => void send()} disabled={loading || !input.trim()} className="h-12 w-12 rounded-xl p-0">
-            <Send size={18} />
-          </Button>
-        </div>
-
-        <button
-          onClick={markTopicDone}
-          className="mt-3 text-center text-sm text-primary font-medium"
-        >
-          Done with this topic →
-        </button>
+          <button
+            type="button"
+            onClick={markTopicDone}
+            className="mt-3 text-center text-sm text-primary font-medium"
+          >
+            Done with this topic →
+          </button>
+        </main>
       </div>
       <BottomNav />
     </div>
