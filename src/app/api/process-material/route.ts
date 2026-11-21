@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { createClient } from "@/lib/supabase/server"
 import { analyzeMaterial } from "@/lib/ai/generate-questions"
 import { extractContent } from "@/lib/extract-content"
+import { buildSourceChunks } from "@/lib/ai/source-text"
+import { replaceMaterialChunks } from "@/lib/ai/retrieval"
 
 // Vercel stops the function after this many seconds
 export const maxDuration = 60
@@ -158,6 +160,24 @@ export async function POST(req: NextRequest) {
       return fail(
         "Could not save the notes: " + updateError.message + " (did you run supabase-update-1.sql?)"
       )
+    }
+
+
+    // Phase 2: store original text chunks for Tutor retrieval (separate from AI notes summary)
+    try {
+      const sourceChunks = buildSourceChunks(extracted.input)
+      const chunkResult = await replaceMaterialChunks(supabase, {
+        materialId,
+        userId: user.id,
+        chunks: sourceChunks,
+      })
+      if (!chunkResult.ok) {
+        console.warn("material_chunks:", chunkResult.error)
+      } else if (chunkResult.count > 0) {
+        console.log("material_chunks saved:", chunkResult.count)
+      }
+    } catch (chunkErr) {
+      console.warn("material_chunks exception:", chunkErr)
     }
 
     await setProgress("done", 100)
