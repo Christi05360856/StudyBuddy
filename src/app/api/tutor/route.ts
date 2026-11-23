@@ -27,6 +27,38 @@ import {
 } from "@/lib/ai/learning-state"
 
 type ChatMessage = { role: "user" | "assistant"; content: string }
+
+/** True if text looks like model JSON rather than student-facing prose. */
+function looksLikeStructuredPayload(text: string): boolean {
+  const t = text.trim()
+  if (!t) return false
+  if (t.startsWith("{") || t.startsWith("[")) return true
+  if (t.includes('"replyMarkdown"') || t.includes('"statePatch"') || t.includes('"blocks"')) return true
+  if (t.includes("```json")) return true
+  return false
+}
+
+function friendlyTutorFailure(): string {
+  return "I had trouble putting that lesson together. Please tap retry — your notes and topic are still here."
+}
+
+function tokenBudgetFor(action: string): number {
+  switch (action) {
+    case "request_hint":
+      return 1536
+    case "recap":
+      return 2048
+    case "submit_answer":
+      return 3072
+    case "request_reexplanation":
+      return 3072
+    case "start_lesson":
+      return 4096
+    default:
+      return 3072
+  }
+}
+
 type TutorAction =
   | "start_lesson"
   | "student_message"
@@ -330,8 +362,8 @@ export async function POST(req: NextRequest) {
       systemInstruction,
       parts: [{ text: userContent }],
       json: true,
-      maxOutputTokens: 6144,
-      timeoutMs: 50000,
+      maxOutputTokens: tokenBudgetFor(action),
+      timeoutMs: 45000,
     })
 
     if (!result.ok) {
@@ -345,25 +377,48 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: providerBusyMessage() }, { status: 503 })
     }
 
-    // Parse structured JSON; fall back to plain text reply
+    // Parse structured JSON — NEVER surface raw model JSON to the student
     let blocks: LessonBlock[] = []
     let evaluation = null as ReturnType<typeof parseEvaluation>
-    let reply = result.text
+    let reply = ""
+    let parseOk = false
 
-    const parsed = parseJson<{
+    let modelText = result.text
+    let parsed = parseJson<{
       replyMarkdown?: unknown
       statePatch?: Partial<LearningState>
       blocks?: unknown
       evaluation?: unknown
-    }>(result.text)
+    }>(modelText)
+
+    // One recovery attempt if the model returned invalid JSON for a structured call
+    if (!parsed && looksLikeStructuredPayload(modelText)) {
+      const retry = await callGemini({
+        systemInstruction:
+          systemInstruction +
+          "\n\nYour previous reply was invalid JSON. Reply again with ONLY valid JSON matching the schema. No markdown fences.",
+        parts: [{ text: userContent }],
+        json: true,
+        maxOutputTokens: tokenBudgetFor(action),
+        timeoutMs: 35000,
+      })
+      if (retry.ok) {
+        modelText = retry.text
+        parsed = parseJson(modelText)
+      }
+    }
 
     if (parsed) {
+      parseOk = true
       blocks = parseLessonBlocks(parsed.blocks)
       evaluation = parseEvaluation(parsed.evaluation)
-      if (blocks.length > 0) {
-        reply = blocksToMarkdown(blocks)
-      } else if (typeof parsed.replyMarkdown === "string" && parsed.replyMarkdown.trim()) {
-        reply = parsed.replyMarkdown.trim()
+      const fromBlocks = blocksToMarkdown(blocks)
+      const fromMd =
+        typeof parsed.replyMarkdown === "string" ? parsed.replyMarkdown.trim() : ""
+      reply = fromBlocks || fromMd
+      // If only a check was returned, give a short neutral lead-in (check renders separately)
+      if (!reply && blocks.some((b) => b.type === "understanding_check")) {
+        reply = "Your turn — try the check below."
       }
       if (learningState) {
         learningState = mergeLearningState(learningState, parsed.statePatch)
@@ -390,9 +445,43 @@ export async function POST(req: NextRequest) {
           })
         }
       }
+    } else if (!looksLikeStructuredPayload(modelText)) {
+      // Genuine plain-text teaching reply
+      reply = modelText.trim()
+      parseOk = true
     } else {
-      // Model returned prose — still usable
-      reply = result.text
+      // Still looks like JSON / internal payload — do not show it
+      console.error("Tutor structured parse failed; suppressing raw output")
+      logTutorMetric({
+        action: metricAction,
+        durationMs: Date.now() - t0,
+        ok: false,
+        failureCategory: "validation",
+        validationFailed: true,
+      })
+      return NextResponse.json(
+        {
+          error: friendlyTutorFailure(),
+          retryable: true,
+          sessionId,
+        },
+        { status: 422 }
+      )
+    }
+
+    if (!reply.trim()) {
+      reply =
+        evaluation?.feedback ||
+        "Let me know what part you want to go over, or pick an option below if there is a check."
+    }
+
+    // Final safety: never leak JSON-looking strings
+    if (looksLikeStructuredPayload(reply)) {
+      console.error("Tutor reply still looked structured after normalize")
+      return NextResponse.json(
+        { error: friendlyTutorFailure(), retryable: true, sessionId },
+        { status: 422 }
+      )
     }
 
     // Track last check for next submit_answer
@@ -456,7 +545,7 @@ export async function POST(req: NextRequest) {
       retrievedChunks: retrievalCount,
       hadBlocks: blocks.length > 0,
       hadEvaluation: Boolean(evaluation),
-      validationFailed: !parsed,
+      validationFailed: !parseOk,
     })
 
     return NextResponse.json({
