@@ -17,6 +17,8 @@ import {
   TutorThinking,
   TopicListSkeleton,
   CourseFolderSkeleton,
+  DaySeparator,
+  formatDayLabel,
   type ThinkingMode,
 } from "@/components/tutor/lesson-blocks"
 import {
@@ -31,6 +33,7 @@ import {
 type Message = {
   role: "user" | "assistant"
   content: string
+  createdAt?: number
   evaluation?: {
     result: string
     feedback: string
@@ -221,6 +224,56 @@ function extractCheck(data: {
   }
 }
 
+async function readTutorResponse(
+  res: Response,
+  onPartial?: (full: string) => void
+): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
+  const ctype = res.headers.get("content-type") || ""
+  if (ctype.includes("text/event-stream") && res.body) {
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ""
+    let full = ""
+    const data: Record<string, unknown> = { reply: "" }
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const parts = buffer.split("\n\n")
+      buffer = parts.pop() || ""
+      for (const block of parts) {
+        const lines = block.split("\n")
+        let event = "message"
+        let payload = ""
+        for (const line of lines) {
+          if (line.startsWith("event:")) event = line.slice(6).trim()
+          if (line.startsWith("data:")) payload += line.slice(5).trim()
+        }
+        if (!payload) continue
+        try {
+          const parsed = JSON.parse(payload) as Record<string, unknown>
+          if (event === "content") {
+            full = String(parsed.full || full + String(parsed.text || ""))
+            data.reply = full
+            onPartial?.(full)
+          } else if (event === "evaluation") data.evaluation = parsed
+          else if (event === "lesson") data.lesson = parsed
+          else if (event === "state") data.state = parsed
+          else if (event === "done") Object.assign(data, parsed)
+          else if (event === "error") {
+            return { ok: false, status: 422, data: { error: String(parsed.message || "Failed") } }
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    return { ok: true, status: 200, data }
+  }
+  const data = await res.json()
+  return { ok: res.ok, status: res.status, data }
+}
+
 function looksLikeJson(text: string): boolean {
   const t = (text || "").trim()
   if (!t) return false
@@ -337,18 +390,58 @@ function TutorContent() {
     load()
   }, [materialId])
 
+  const applyTutorData = (data: Record<string, unknown>) => {
+    if (typeof data.sessionId === "string" && data.sessionId) setSessionId(data.sessionId)
+    const replyText = String(data.reply || "")
+    if (looksLikeJson(replyText)) {
+      throw new Error(
+        "I had trouble with that reply. Please try again — your notes are still here."
+      )
+    }
+    const check = extractCheck(data as Parameters<typeof extractCheck>[0])
+    setPendingCheck(check)
+    const st = stageFrom(data as { state?: { currentStage?: string } | null })
+    if (st) setLessonStage(st)
+    setDraft("")
+    setMessages((prev) => {
+      const last = prev[prev.length - 1]
+      if (last?.role === "assistant") {
+        return [
+          ...prev.slice(0, -1),
+          {
+            role: "assistant",
+            content: replyText || "No reply.",
+            createdAt: last.createdAt || Date.now(),
+            check,
+            evaluation: (data.evaluation as Message["evaluation"]) || null,
+          },
+        ]
+      }
+      return [
+        ...prev,
+        {
+          role: "assistant",
+          content: replyText || "No reply.",
+          createdAt: Date.now(),
+          check,
+          evaluation: (data.evaluation as Message["evaluation"]) || null,
+        },
+      ]
+    })
+  }
+
   const startTopic = async (topic: string) => {
     setActiveTopic(topic)
     setPhase("chat")
     setMessages([])
     setLoading(true)
+    setThinkingMode("start_lesson")
 
     try {
-      // Load previous chat for this material + topic (if any)
       if (materialId) {
         const { data: saved } = await supabase
           .from("tutor_messages")
-          .select("role, content")
+          .select("role, content, created_at")
           .eq("material_id", materialId)
           .eq("topic", topic)
           .order("created_at", { ascending: true })
@@ -364,19 +457,34 @@ function TutorContent() {
               return {
                 role: m.role as "user" | "assistant",
                 content,
+                createdAt: m.created_at ? new Date(m.created_at as string).getTime() : Date.now(),
               }
             })
           )
+          const { data: sess } = await supabase
+            .from("tutor_sessions")
+            .select("id, current_stage")
+            .eq("material_id", materialId)
+            .eq("topic", topic)
+            .order("updated_at", { ascending: false })
+            .limit(1)
+            .maybeSingle()
+          if (sess?.id) {
+            setSessionId(sess.id)
+            if (sess.current_stage) setLessonStage(String(sess.current_stage))
+          }
           setLoading(false)
           return
         }
       }
 
+      setMessages([{ role: "assistant", content: "…", createdAt: Date.now() }])
       const res = await fetch("/api/tutor", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "start_lesson",
+          stream: true,
           message: `Teach me this topic thoroughly: "${topic}". Cover the key ideas (what it is, why it matters, how it works), give a clear worked example if there is any calculation, procedure, or code, then check my understanding once.`,
           level,
           context,
@@ -386,34 +494,20 @@ function TutorContent() {
           topic,
         }),
       })
-      const data = await res.json()
-      if (!res.ok || !data.reply) {
-        throw new Error(data.error || "No reply from the AI.")
+      const { ok, data } = await readTutorResponse(res, (full) => {
+        setMessages([{ role: "assistant", content: full }])
+      })
+      if (!ok || !data.reply) {
+        throw new Error(String(data.error || "No reply from the AI."))
       }
-      // Never display raw JSON payloads
-      if (looksLikeJson(data.reply)) {
-        throw new Error("I had trouble preparing that lesson. Please try again — your notes are still here.")
-      }
-      if (data.sessionId) setSessionId(data.sessionId)
-      const check = extractCheck(data)
-      setPendingCheck(check)
-      {
-        const st = stageFrom(data)
-        if (st) setLessonStage(st)
-      }
-      setMessages([
-        {
-          role: "assistant",
-          content: data.reply,
-          check,
-        },
-      ])
+      applyTutorData(data)
     } catch (err) {
       setMessages([
         {
           role: "assistant",
           content:
             (err instanceof Error && err.message) || "Could not start this topic. Please try again.",
+          createdAt: Date.now(),
         },
       ])
     } finally {
@@ -451,45 +545,42 @@ function TutorContent() {
 
     setDraft(text)
     setInput("")
-    setMessages((prev) => [...prev, { role: "user", content: text }])
+    setMessages((prev) => [...prev, { role: "user", content: text, createdAt: Date.now() }])
     setLoading(true)
     setThinkingMode("student_message")
 
     try {
+      setMessages((prev) => [...prev, { role: "assistant", content: "…", createdAt: Date.now() }])
       const res = await fetch("/api/tutor", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "student_message",
+          stream: true,
           sessionId,
-          message: activeTopic ? text : text,
+          message: text,
           level,
           context,
           studentName,
-          history: messages.slice(-8),
+          history: messages.slice(-6),
           materialId,
           topic: activeTopic || "general",
         }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || "Failed")
-      if (data.sessionId) setSessionId(data.sessionId)
-      const check = extractCheck(data)
-      setPendingCheck(check)
-      {
-        const st = stageFrom(data)
-        if (st) setLessonStage(st)
-      }
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: data.reply || "No reply.",
-          check,
-          evaluation: data.evaluation || null,
-        },
-      ])
+      const { ok, data } = await readTutorResponse(res, (full) => {
+        setMessages((prev) => {
+          const copy = [...prev]
+          const last = copy.length - 1
+          if (last >= 0 && copy[last].role === "assistant") {
+            copy[last] = { ...copy[last], content: full }
+          }
+          return copy
+        })
+      })
+      if (!ok) throw new Error(String(data.error || "Failed"))
+      applyTutorData(data)
     } catch (err) {
+      setInput((prev) => prev || draft)
       setMessages((prev) => [
         ...prev,
         {
@@ -503,7 +594,6 @@ function TutorContent() {
     }
   }
 
-
   const sendAction = async (
     action: "student_message" | "request_hint" | "request_reexplanation" | "recap",
     text: string
@@ -511,43 +601,39 @@ function TutorContent() {
     const trimmed = text.trim()
     if (!trimmed || loading) return
     setInput("")
-    setMessages((prev) => [...prev, { role: "user", content: trimmed }])
+    setMessages((prev) => [...prev, { role: "user", content: trimmed, createdAt: Date.now() }])
     setLoading(true)
     setThinkingMode(action)
     try {
+      setMessages((prev) => [...prev, { role: "assistant", content: "…", createdAt: Date.now() }])
       const res = await fetch("/api/tutor", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action,
+          stream: true,
           sessionId,
           message: trimmed,
           level,
           context,
           studentName,
-          history: messages.slice(-8),
+          history: messages.slice(-6),
           materialId,
           topic: activeTopic || "general",
         }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || "Failed")
-      if (data.sessionId) setSessionId(data.sessionId)
-      const check = extractCheck(data)
-      setPendingCheck(check)
-      {
-        const st = stageFrom(data)
-        if (st) setLessonStage(st)
-      }
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: data.reply || "No reply.",
-          check,
-          evaluation: data.evaluation || null,
-        },
-      ])
+      const { ok, data } = await readTutorResponse(res, (full) => {
+        setMessages((prev) => {
+          const copy = [...prev]
+          const last = copy.length - 1
+          if (last >= 0 && copy[last].role === "assistant") {
+            copy[last] = { ...copy[last], content: full }
+          }
+          return copy
+        })
+      })
+      if (!ok) throw new Error(String(data.error || "Failed"))
+      applyTutorData(data)
     } catch (err) {
       setMessages((prev) => [
         ...prev,
@@ -572,46 +658,42 @@ function TutorContent() {
           ? { ...m, checkLocked: true, selectedAnswer: text.trim() }
           : m
       )
-      return [...next, { role: "user" as const, content: answerLine }]
+      return [...next, { role: "user" as const, content: answerLine, createdAt: Date.now() }]
     })
     setPendingCheck(null)
     setLoading(true)
     setThinkingMode("submit_answer")
     try {
+      setMessages((prev) => [...prev, { role: "assistant", content: "…", createdAt: Date.now() }])
       const res = await fetch("/api/tutor", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "submit_answer",
+          stream: true,
           sessionId,
           message: text.trim(),
           answer: { questionId, text: text.trim() },
           level,
           context,
           studentName,
-          history: messages.slice(-8),
+          history: messages.slice(-6),
           materialId,
           topic: activeTopic || "general",
         }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || "Failed")
-      if (data.sessionId) setSessionId(data.sessionId)
-      const check = extractCheck(data)
-      setPendingCheck(check)
-      {
-        const st = stageFrom(data)
-        if (st) setLessonStage(st)
-      }
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: data.reply || data.evaluation?.feedback || "No reply.",
-          check,
-          evaluation: data.evaluation || null,
-        },
-      ])
+      const { ok, data } = await readTutorResponse(res, (full) => {
+        setMessages((prev) => {
+          const copy = [...prev]
+          const last = copy.length - 1
+          if (last >= 0 && copy[last].role === "assistant") {
+            copy[last] = { ...copy[last], content: full }
+          }
+          return copy
+        })
+      })
+      if (!ok) throw new Error(String(data.error || "Failed"))
+      applyTutorData(data)
     } catch (err) {
       setMessages((prev) => [
         ...prev,
@@ -787,9 +869,15 @@ function TutorContent() {
                 Starting your lesson…
               </div>
             )}
-            {messages.map((m, i) => (
+            {messages.map((m, i) => {
+              const prev = i > 0 ? messages[i - 1] : null
+              const day = m.createdAt ? formatDayLabel(m.createdAt) : ""
+              const prevDay = prev?.createdAt ? formatDayLabel(prev.createdAt) : ""
+              const showDay = Boolean(day && day !== prevDay)
+              return (
               <div key={i} className="space-y-2">
-                <TutorBubble role={m.role} content={m.content} />
+                {showDay ? <DaySeparator label={day} /> : null}
+                <TutorBubble role={m.role} content={m.content} at={m.createdAt} />
                 {m.role === "assistant" && m.evaluation && (
                   <EvaluationCard evaluation={m.evaluation} />
                 )}
@@ -805,7 +893,7 @@ function TutorContent() {
                     />
                   )}
               </div>
-            ))}
+            )})}
             {loading && <TutorThinking mode={thinkingMode} />}
             <div ref={bottomRef} />
           </div>
