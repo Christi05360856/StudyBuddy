@@ -17,6 +17,7 @@ import {
   TutorThinking,
   TopicListSkeleton,
   CourseFolderSkeleton,
+  type ThinkingMode,
 } from "@/components/tutor/lesson-blocks"
 import {
   LevelChips,
@@ -41,6 +42,9 @@ type Message = {
     answerType: "single_choice" | "short_text"
     options?: { id: string; text: string }[]
   } | null
+  /** When set, the check on this message is locked after answer */
+  checkLocked?: boolean
+  selectedAnswer?: string
 }
 
 type FolderCourse = { id: string; code: string; title: string | null }
@@ -217,6 +221,14 @@ function extractCheck(data: {
   }
 }
 
+function looksLikeJson(text: string): boolean {
+  const t = (text || "").trim()
+  if (!t) return false
+  if (t.startsWith("{") || t.startsWith("[")) return true
+  if (t.includes('"replyMarkdown"') || t.includes('"statePatch"') || t.includes('"blocks"')) return true
+  return false
+}
+
 function stageFrom(data: { state?: { currentStage?: string } | null }): string | null {
   const s = data?.state?.currentStage
   return typeof s === "string" && s ? s : null
@@ -251,6 +263,8 @@ function TutorContent() {
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [pendingCheck, setPendingCheck] = useState<Message["check"]>(null)
   const [checkBusy, setCheckBusy] = useState(false)
+  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>("default")
+  const [draft, setDraft] = useState("") // preserved on failed send
   const [outlineOpen, setOutlineOpen] = useState(false)
   const [lessonStage, setLessonStage] = useState<string | null>(null)
   const [materialFileLabel, setMaterialFileLabel] = useState<string>("Lecture note")
@@ -342,10 +356,16 @@ function TutorContent() {
 
         if (saved && saved.length > 0) {
           setMessages(
-            saved.map((m) => ({
-              role: m.role as "user" | "assistant",
-              content: m.content,
-            }))
+            saved.map((m) => {
+              const content =
+                m.role === "assistant" && looksLikeJson(m.content)
+                  ? "Previous reply could not be shown. Ask me to continue from here."
+                  : m.content
+              return {
+                role: m.role as "user" | "assistant",
+                content,
+              }
+            })
           )
           setLoading(false)
           return
@@ -369,6 +389,10 @@ function TutorContent() {
       const data = await res.json()
       if (!res.ok || !data.reply) {
         throw new Error(data.error || "No reply from the AI.")
+      }
+      // Never display raw JSON payloads
+      if (looksLikeJson(data.reply)) {
+        throw new Error("I had trouble preparing that lesson. Please try again — your notes are still here.")
       }
       if (data.sessionId) setSessionId(data.sessionId)
       const check = extractCheck(data)
@@ -397,6 +421,19 @@ function TutorContent() {
     }
   }
 
+  const leaveToTopics = () => {
+    // Navigation only — do NOT mark the topic complete
+    setActiveTopic(null)
+    setMessages([])
+    setSessionId(null)
+    setPendingCheck(null)
+    setLessonStage(null)
+    setOutlineOpen(false)
+    setInput("")
+    setDraft("")
+    setPhase("topics")
+  }
+
   const markTopicDone = () => {
     if (activeTopic && materialId) {
       setCompletedTopics((prev) => {
@@ -405,22 +442,18 @@ function TutorContent() {
         return next
       })
     }
-    setActiveTopic(null)
-    setMessages([])
-    setSessionId(null)
-    setPendingCheck(null)
-    setLessonStage(null)
-    setOutlineOpen(false)
-    setPhase("topics")
+    leaveToTopics()
   }
 
   const send = async (preset?: string) => {
     const text = (preset ?? input).trim()
     if (!text || loading) return
 
+    setDraft(text)
     setInput("")
     setMessages((prev) => [...prev, { role: "user", content: text }])
     setLoading(true)
+    setThinkingMode("student_message")
 
     try {
       const res = await fetch("/api/tutor", {
@@ -480,6 +513,7 @@ function TutorContent() {
     setInput("")
     setMessages((prev) => [...prev, { role: "user", content: trimmed }])
     setLoading(true)
+    setThinkingMode(action)
     try {
       const res = await fetch("/api/tutor", {
         method: "POST",
@@ -531,9 +565,18 @@ function TutorContent() {
   const submitCheckAnswer = async (questionId: string, text: string) => {
     if (!text.trim() || checkBusy || loading) return
     setCheckBusy(true)
-    setMessages((prev) => [...prev, { role: "user", content: text.trim() }])
+    const answerLine = `ANS: ${text.trim()}`
+    setMessages((prev) => {
+      const next = prev.map((m, idx) =>
+        idx === prev.length - 1 && m.check
+          ? { ...m, checkLocked: true, selectedAnswer: text.trim() }
+          : m
+      )
+      return [...next, { role: "user" as const, content: answerLine }]
+    })
     setPendingCheck(null)
     setLoading(true)
+    setThinkingMode("submit_answer")
     try {
       const res = await fetch("/api/tutor", {
         method: "POST",
@@ -668,7 +711,7 @@ function TutorContent() {
         <div className="max-w-5xl mx-auto px-4 h-14 flex items-center gap-3">
           <button
             type="button"
-            onClick={markTopicDone}
+            onClick={leaveToTopics}
             className="p-2 -ml-1 rounded-full hover:bg-muted"
             aria-label="Back to topics"
           >
@@ -752,17 +795,18 @@ function TutorContent() {
                 )}
                 {m.role === "assistant" &&
                   m.check &&
-                  i === messages.length - 1 &&
-                  pendingCheck && (
+                  (m.checkLocked || (i === messages.length - 1 && pendingCheck)) && (
                     <UnderstandingCheckCard
                       check={m.check}
                       disabled={checkBusy || loading}
+                      locked={Boolean(m.checkLocked)}
+                      selectedText={m.selectedAnswer}
                       onAnswer={(qid, text) => void submitCheckAnswer(qid, text)}
                     />
                   )}
               </div>
             ))}
-            {loading && <TutorThinking />}
+            {loading && <TutorThinking mode={thinkingMode} />}
             <div ref={bottomRef} />
           </div>
 
@@ -791,20 +835,26 @@ function TutorContent() {
           )}
 
           {/* Composer */}
-          <div className="flex gap-2 pt-1">
-            <input
+          <div className="flex gap-2 pt-1 items-end">
+            <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && void send()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault()
+                  void send()
+                }
+              }}
               placeholder="Ask a question or type an answer…"
               disabled={loading}
-              className="flex-1 h-12 rounded-xl border border-border bg-card px-4 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50"
+              rows={1}
+              className="flex-1 min-h-12 max-h-36 resize-none rounded-xl border border-border bg-card px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50 leading-relaxed"
               aria-label="Message the tutor"
             />
             <Button
               onClick={() => void send()}
               disabled={loading || !input.trim()}
-              className="h-12 w-12 rounded-xl p-0"
+              className="h-12 w-12 rounded-xl p-0 shrink-0"
               aria-label="Send"
             >
               <Send size={18} />
