@@ -1,9 +1,9 @@
 // PATH: src/components/tutor/lesson-blocks.tsx
 "use client"
 
+import { useEffect, useState } from "react"
 import { cn } from "@/lib/utils"
 import { Markdown } from "@/components/markdown"
-import { Loader2 } from "lucide-react"
 
 export type CheckOption = { id: string; text: string }
 
@@ -19,6 +19,17 @@ export type TutorEvaluation = {
   feedback: string
   misconception?: { detected: boolean; label?: string; explanation?: string }
 }
+
+const THINKING_LINES = [
+  { emoji: "🧠", text: "Mulling this over…" },
+  { emoji: "📚", text: "Reading your material…" },
+  { emoji: "✨", text: "Shaping the explanation…" },
+  { emoji: "🧩", text: "Connecting the ideas…" },
+  { emoji: "✍️", text: "Writing it clearly…" },
+  { emoji: "🔍", text: "Checking the details…" },
+  { emoji: "💡", text: "Finding a better example…" },
+  { emoji: "🧪", text: "Working through an example…" },
+]
 
 export function EvaluationCard({ evaluation }: { evaluation: TutorEvaluation }) {
   const tone =
@@ -109,10 +120,68 @@ export function TutorBubble({
   )
 }
 
-export function TutorTyping() {
+/** Animated status while the model is working — status words, not a bare spinner. */
+export function TutorThinking() {
+  const [i, setI] = useState(0)
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setI((n) => (n + 1) % THINKING_LINES.length)
+    }, 2200)
+    return () => window.clearInterval(id)
+  }, [])
+
+  const line = THINKING_LINES[i]
+
   return (
-    <div className="bg-card border border-border rounded-2xl px-4 py-3 w-fit">
-      <Loader2 size={18} className="animate-spin text-primary" />
+    <div
+      className="w-fit max-w-[min(100%,20rem)] rounded-2xl border border-border bg-card px-4 py-3 shadow-sm"
+      role="status"
+      aria-live="polite"
+      aria-label={line.text}
+    >
+      <div className="flex items-center gap-2.5">
+        <span className="text-lg leading-none animate-pulse" aria-hidden>
+          {line.emoji}
+        </span>
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-foreground truncate">{line.text}</p>
+          <div className="mt-1.5 flex gap-1">
+            <span className="h-1.5 w-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:0ms]" />
+            <span className="h-1.5 w-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:150ms]" />
+            <span className="h-1.5 w-1.5 rounded-full bg-primary/70 animate-bounce [animation-delay:300ms]" />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** @deprecated use TutorThinking */
+export function TutorTyping() {
+  return <TutorThinking />
+}
+
+export function Skeleton({ className }: { className?: string }) {
+  return <div className={cn("animate-pulse rounded-xl bg-muted", className)} />
+}
+
+export function TopicListSkeleton() {
+  return (
+    <div className="space-y-2" aria-hidden>
+      {Array.from({ length: 5 }).map((_, i) => (
+        <Skeleton key={i} className="h-14 w-full" />
+      ))}
+    </div>
+  )
+}
+
+export function CourseFolderSkeleton() {
+  return (
+    <div className="space-y-3" aria-hidden>
+      {Array.from({ length: 3 }).map((_, i) => (
+        <Skeleton key={i} className="h-16 w-full rounded-2xl" />
+      ))}
     </div>
   )
 }
