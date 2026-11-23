@@ -7,6 +7,7 @@ import { Loader2 } from "lucide-react"
 import { BottomNav } from "@/components/bottom-nav"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
+import { ListPageSkeleton } from "@/components/ui/skeleton"
 import { BackButton } from "@/components/back-button"
 import { createClient } from "@/lib/supabase/client"
 
@@ -135,9 +136,7 @@ export default function ProgressPage() {
         </div>
 
         {loading ? (
-          <div className="flex justify-center py-16">
-            <Loader2 className="animate-spin text-primary" size={28} />
-          </div>
+          <ListPageSkeleton rows={5} />
         ) : failed ? (
           <p className="text-center text-gray-500 py-16">Could not load your progress. Please try again.</p>
         ) : attempts.length === 0 ? (
