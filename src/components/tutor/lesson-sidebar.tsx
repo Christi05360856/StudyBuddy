@@ -1,8 +1,9 @@
 // PATH: src/components/tutor/lesson-sidebar.tsx
 "use client"
 
+import { useEffect } from "react"
 import { cn } from "@/lib/utils"
-import { Check, Circle, List } from "lucide-react"
+import { Check, Circle, List, X } from "lucide-react"
 
 export type LessonLevel = "very_simple" | "standard" | "advanced" | "exam_ready"
 
@@ -141,9 +142,119 @@ export function OutlineToggleButton({
         open ? "border-primary/40 bg-primary/5 text-primary" : "border-border bg-card text-gray-600"
       )}
       aria-expanded={open}
+      aria-haspopup="dialog"
     >
       <List size={14} />
       Sections
     </button>
+  )
+}
+
+/**
+ * Full-screen mobile overlay for lesson sections.
+ * Backdrop click or X closes it.
+ */
+export function SectionsOverlay({
+  open,
+  onClose,
+  materialLabel,
+  level,
+  onLevelChange,
+  progressCurrent,
+  progressTotal,
+  stageLabel,
+  topics,
+  activeTopic,
+  completedTopics,
+  onSelectTopic,
+  disabled,
+}: {
+  open: boolean
+  onClose: () => void
+  materialLabel: string
+  level: LessonLevel
+  onLevelChange: (l: LessonLevel) => void
+  progressCurrent: number
+  progressTotal: number
+  stageLabel?: string
+  topics: string[]
+  activeTopic: string | null
+  completedTopics: Set<string>
+  onSelectTopic: (topic: string) => void
+  disabled?: boolean
+}) {
+  useEffect(() => {
+    if (!open) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    return () => {
+      document.body.style.overflow = prev
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [open, onClose])
+
+  if (!open) return null
+
+  return (
+    <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label="Lesson sections">
+      <button
+        type="button"
+        className="absolute inset-0 bg-black/45"
+        aria-label="Close sections"
+        onClick={onClose}
+      />
+
+      <div className="absolute inset-x-0 bottom-0 top-12 flex flex-col rounded-t-3xl bg-card shadow-2xl border-t border-border">
+        <div className="flex items-center justify-between px-5 pt-4 pb-3 border-b border-border shrink-0">
+          <div className="min-w-0 pr-3">
+            <p className="text-base font-semibold">Your lesson</p>
+            <p className="text-xs text-gray-500 mt-0.5 truncate">{materialLabel}</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-9 w-9 shrink-0 rounded-full bg-muted flex items-center justify-center"
+            aria-label="Close"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5 pb-10">
+          <div>
+            <p className="text-[11px] font-medium text-gray-500 mb-2">Teaching level</p>
+            <LevelChips level={level} onChange={onLevelChange} disabled={disabled} />
+          </div>
+
+          <LessonProgressBar
+            current={progressCurrent}
+            total={progressTotal}
+            stageLabel={stageLabel}
+          />
+
+          <div>
+            <p className="text-[11px] font-medium text-gray-500 mb-2">Lesson outline</p>
+            <TopicOutline
+              topics={topics}
+              active={activeTopic}
+              completed={completedTopics}
+              disabled={disabled}
+              onSelect={(t) => {
+                onSelectTopic(t)
+                onClose()
+              }}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
   )
 }
