@@ -6,6 +6,7 @@ import { BottomNav } from "@/components/bottom-nav"
 import { Plus, ChevronRight, Loader2, Trash2 } from "lucide-react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
+import { ListPageSkeleton } from "@/components/ui/skeleton"
 import { Input } from "@/components/ui/input"
 import { BackButton } from "@/components/back-button"
 import { createClient } from "@/lib/supabase/client"
@@ -179,9 +180,7 @@ export default function CoursesPage() {
         )}
 
         {loading ? (
-          <div className="flex justify-center py-16">
-            <Loader2 className="animate-spin text-primary" size={28} />
-          </div>
+          <ListPageSkeleton rows={5} />
         ) : courses.length === 0 ? (
           <div className="text-center py-16">
             <p className="text-gray-500 mb-4">No courses yet</p>
