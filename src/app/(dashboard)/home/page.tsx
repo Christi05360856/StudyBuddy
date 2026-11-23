@@ -8,6 +8,7 @@ import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { computeStreak, daysUntil, lagosToday } from "@/lib/streak"
 import { cn } from "@/lib/utils"
+import { ListPageSkeleton } from "@/components/ui/skeleton"
 import { HeadphonesButton } from "@/components/music/headphones-button"
 import type { SharedMaterialRow } from "@/lib/share"
 
@@ -159,6 +160,8 @@ export default function HomePage() {
             </Link>
           </div>
         </div>
+
+        {loading && <ListPageSkeleton rows={6} />}
 
         {/* Streak (+ next assessment only when a date is set) */}
         {!loading && (
