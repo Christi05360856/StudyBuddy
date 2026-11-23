@@ -172,15 +172,8 @@ function uniqueStrings(arr: string[]): string[] {
 export function blocksToMarkdown(blocks: LessonBlock[]): string {
   const parts: string[] = []
   for (const b of blocks) {
-    if (b.type === "understanding_check") {
-      parts.push(`### Check your understanding\n\n${b.prompt}`)
-      if (b.options?.length) {
-        for (const o of b.options) {
-          parts.push(`- ${o.text}`)
-        }
-      }
-      continue
-    }
+    // Checks are rendered only by UnderstandingCheckCard — never in Markdown
+    if (b.type === "understanding_check") continue
     const title = b.title ? `## ${b.title}\n\n` : ""
     if (b.type === "code") {
       const lang = b.language || ""
