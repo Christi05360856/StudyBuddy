@@ -399,22 +399,9 @@ export default function CourseDetailPage() {
     await load()
   }
 
-  // Opens the original file so the student can read it without the AI
-  const readMaterial = async (m: Material) => {
-    // Open the new tab first, otherwise phones may block it
-    const newTab = window.open("", "_blank")
-    const { data, error } = await supabase.storage
-      .from("materials")
-      .createSignedUrl(m.file_path, 60 * 60)
-
-    if (error || !data?.signedUrl) {
-      newTab?.close()
-      setErrorMsg("Could not open this file. Please try again.")
-      return
-    }
-
-    if (newTab) newTab.location.href = data.signedUrl
-    else window.location.href = data.signedUrl
+  // Opens the original file inside the app (no AI tokens). PDFs/images embed; others open carefully.
+  const readMaterial = (m: Material) => {
+    router.push(`/materials/${m.id}/read`)
   }
 
   // Deletes a note: first the database row (which also removes its questions and quiz history),
