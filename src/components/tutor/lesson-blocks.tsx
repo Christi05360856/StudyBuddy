@@ -64,6 +64,42 @@ const THINKING_BY_MODE: Record<ThinkingMode, { emoji: string; text: string }[]> 
   ],
 }
 
+export function formatMessageTime(ts: number | string | Date | null | undefined): string {
+  if (ts == null) return ""
+  const d = typeof ts === "number" || typeof ts === "string" ? new Date(ts) : ts
+  if (Number.isNaN(d.getTime())) return ""
+  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+}
+
+export function formatDayLabel(ts: number | string | Date): string {
+  const d = typeof ts === "number" || typeof ts === "string" ? new Date(ts) : ts
+  if (Number.isNaN(d.getTime())) return ""
+  const start = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
+  const today = start(new Date())
+  const day = start(d)
+  const diffDays = Math.round((today - day) / 86400000)
+  if (diffDays === 0) return "Today"
+  if (diffDays === 1) return "Yesterday"
+  if (diffDays > 1 && diffDays < 7) {
+    return d.toLocaleDateString([], { weekday: "long" })
+  }
+  // e.g. 11/12/2026
+  const dd = String(d.getDate()).padStart(2, "0")
+  const mm = String(d.getMonth() + 1).padStart(2, "0")
+  const yyyy = d.getFullYear()
+  return `${dd}/${mm}/${yyyy}`
+}
+
+export function DaySeparator({ label }: { label: string }) {
+  return (
+    <div className="flex justify-center my-3">
+      <span className="text-[11px] font-medium text-gray-500 bg-muted/80 px-3 py-1 rounded-full shadow-sm">
+        {label}
+      </span>
+    </div>
+  )
+}
+
 export function EvaluationCard({ evaluation }: { evaluation: TutorEvaluation }) {
   const tone =
     evaluation.result === "correct"
@@ -81,9 +117,7 @@ export function EvaluationCard({ evaluation }: { evaluation: TutorEvaluation }) 
 
   return (
     <div className={cn("rounded-2xl border px-4 py-3 text-sm", tone)} role="status">
-      <p className="text-[11px] font-semibold uppercase tracking-wide mb-1">
-        {label}
-      </p>
+      <p className="text-[11px] font-semibold uppercase tracking-wide mb-1">{label}</p>
       <p className="leading-relaxed">{evaluation.feedback}</p>
       {evaluation.misconception?.detected && evaluation.misconception.explanation && (
         <p className="text-xs text-gray-600 dark:text-gray-400 mt-2 leading-relaxed">
@@ -144,30 +178,46 @@ export function UnderstandingCheckCard({
       ) : (
         <p className="text-xs text-gray-500">Type your answer below and send.</p>
       )}
-      {locked && (
-        <p className="text-[11px] text-gray-500">Answer submitted</p>
-      )}
+      {locked && <p className="text-[11px] text-gray-500">Answer submitted</p>}
     </div>
   )
 }
 
+/** WhatsApp-style chat bubble with time */
 export function TutorBubble({
   role,
   content,
+  at,
 }: {
   role: "user" | "assistant"
   content: string
+  at?: number | string | null
 }) {
+  const time = formatMessageTime(at ?? null)
+  const isUser = role === "user"
+
   return (
-    <div
-      className={cn(
-        "max-w-[min(100%,36rem)] rounded-2xl px-4 py-3 text-sm leading-relaxed",
-        role === "user"
-          ? "ml-auto bg-primary text-white whitespace-pre-wrap"
-          : "bg-card border border-border"
-      )}
-    >
-      {role === "user" ? content : <Markdown text={content} />}
+    <div className={cn("flex flex-col max-w-[min(100%,22rem)] sm:max-w-[min(100%,28rem)]", isUser ? "ml-auto items-end" : "items-start")}>
+      <div
+        className={cn(
+          "px-3.5 py-2.5 text-sm leading-relaxed shadow-sm",
+          isUser
+            ? "bg-primary text-white rounded-2xl rounded-br-md whitespace-pre-wrap"
+            : "bg-card border border-border text-foreground rounded-2xl rounded-bl-md"
+        )}
+      >
+        {isUser ? content : <Markdown text={content} />}
+        {time ? (
+          <p
+            className={cn(
+              "text-[10px] mt-1 text-right leading-none",
+              isUser ? "text-white/75" : "text-gray-400"
+            )}
+          >
+            {time}
+          </p>
+        ) : null}
+      </div>
     </div>
   )
 }
@@ -188,7 +238,7 @@ export function TutorThinking({ mode = "default" }: { mode?: ThinkingMode }) {
 
   return (
     <div
-      className="w-fit max-w-[min(100%,22rem)] rounded-2xl border border-border bg-card px-4 py-3 shadow-sm"
+      className="w-fit max-w-[min(100%,22rem)] rounded-2xl rounded-bl-md border border-border bg-card px-4 py-3 shadow-sm"
       role="status"
       aria-live="polite"
       aria-label={line.text}
