@@ -14,6 +14,7 @@ import {
   normalizeLevel,
 } from "@/lib/ai/tutor-policy"
 import { formatChunksForTutor, retrieveMaterialChunks } from "@/lib/ai/retrieval"
+import { logTutorMetric, classifyTutorFailure } from "@/lib/ai/tutor-metrics"
 import {
   blocksToMarkdown,
   emptyLearningState,
@@ -112,6 +113,8 @@ Rules:
 }
 
 export async function POST(req: NextRequest) {
+  const t0 = Date.now()
+  let metricAction = "student_message"
   try {
     const supabase = await createClient()
     const {
@@ -151,6 +154,7 @@ export async function POST(req: NextRequest) {
 
     const hasAnswer = Boolean(answer && typeof answer === "object")
     const action = detectAction(rawAction, hasAnswer)
+    metricAction = action
 
     const textMessage =
       typeof message === "string"
@@ -332,6 +336,12 @@ export async function POST(req: NextRequest) {
 
     if (!result.ok) {
       console.error("Tutor error:", result.error)
+      logTutorMetric({
+        action: metricAction,
+        durationMs: Date.now() - t0,
+        ok: false,
+        failureCategory: classifyTutorFailure(result.error),
+      })
       return NextResponse.json({ error: providerBusyMessage() }, { status: 503 })
     }
 
@@ -438,6 +448,17 @@ export async function POST(req: NextRequest) {
       if (saveError) console.error("tutor_messages save:", saveError.message)
     }
 
+    logTutorMetric({
+      action: metricAction,
+      level: teachingLevel,
+      durationMs: Date.now() - t0,
+      ok: true,
+      retrievedChunks: retrievalCount,
+      hadBlocks: blocks.length > 0,
+      hadEvaluation: Boolean(evaluation),
+      validationFailed: !parsed,
+    })
+
     return NextResponse.json({
       reply,
       model: result.model,
@@ -464,6 +485,12 @@ export async function POST(req: NextRequest) {
     })
   } catch (err) {
     console.error(err)
+    logTutorMetric({
+      action: metricAction,
+      durationMs: Date.now() - t0,
+      ok: false,
+      failureCategory: "exception",
+    })
     return NextResponse.json({ error: "Something went wrong. Please try again." }, { status: 500 })
   }
 }
