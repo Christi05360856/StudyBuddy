@@ -6,7 +6,7 @@ import { useSearchParams, useRouter } from "next/navigation"
 import { BottomNav } from "@/components/bottom-nav"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
-import { Send, Loader2, ArrowLeft, Check, Folder, FolderOpen, ChevronDown, FileText, X } from "lucide-react"
+import { Send, ArrowLeft, Check, Folder, FolderOpen, ChevronDown, FileText } from "lucide-react"
 import Link from "next/link"
 import { createClient } from "@/lib/supabase/client"
 import { HeadphonesButton } from "@/components/music/headphones-button"
@@ -14,13 +14,16 @@ import {
   EvaluationCard,
   UnderstandingCheckCard,
   TutorBubble,
-  TutorTyping,
+  TutorThinking,
+  TopicListSkeleton,
+  CourseFolderSkeleton,
 } from "@/components/tutor/lesson-blocks"
 import {
   LevelChips,
   LessonProgressBar,
   TopicOutline,
   OutlineToggleButton,
+  SectionsOverlay,
   type LessonLevel,
 } from "@/components/tutor/lesson-sidebar"
 
@@ -123,9 +126,7 @@ function CourseFolders() {
         </div>
 
         {loading ? (
-          <div className="flex justify-center py-16">
-            <Loader2 className="animate-spin text-primary" size={28} />
-          </div>
+          <CourseFolderSkeleton />
         ) : courses.length === 0 ? (
           <div className="text-center py-16 space-y-4">
             <p className="text-gray-500 text-sm">You have no courses yet.</p>
@@ -608,9 +609,7 @@ function TutorContent() {
           </div>
 
           {loadingTopics ? (
-            <div className="flex justify-center py-16">
-              <Loader2 className="animate-spin text-primary" size={28} />
-            </div>
+            <TopicListSkeleton />
           ) : topics.length === 0 ? (
             <div className="text-center py-12 space-y-4">
               <p className="text-gray-500 text-sm">Could not extract topics.</p>
@@ -688,42 +687,21 @@ function TutorContent() {
         </div>
       </header>
 
-      {/* Mobile outline sheet */}
-      {outlineOpen && (
-        <div className="lg:hidden border-b border-border bg-card px-4 py-4 space-y-4 max-h-[50vh] overflow-y-auto">
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold">Your lesson</p>
-            <button type="button" className="p-1.5 rounded-lg hover:bg-muted" onClick={() => setOutlineOpen(false)}>
-              <X size={16} />
-            </button>
-          </div>
-          <div className="text-xs text-gray-500 space-y-1">
-            <p>
-              <span className="font-medium text-foreground">Material: </span>
-              {materialFileLabel}
-            </p>
-          </div>
-          <LevelChips level={level} onChange={setLevel} disabled={loading} />
-          <LessonProgressBar
-            current={progressCurrent}
-            total={totalTopics}
-            stageLabel={prettyStage(lessonStage)}
-          />
-          <div>
-            <p className="text-xs font-medium text-gray-500 mb-2">Lesson outline</p>
-            <TopicOutline
-              topics={topics}
-              active={activeTopic}
-              completed={completedTopics}
-              disabled={loading}
-              onSelect={(t) => {
-                setOutlineOpen(false)
-                void startTopic(t)
-              }}
-            />
-          </div>
-        </div>
-      )}
+      <SectionsOverlay
+        open={outlineOpen}
+        onClose={() => setOutlineOpen(false)}
+        materialLabel={materialFileLabel}
+        level={level}
+        onLevelChange={setLevel}
+        progressCurrent={progressCurrent}
+        progressTotal={totalTopics}
+        stageLabel={prettyStage(lessonStage)}
+        topics={topics}
+        activeTopic={activeTopic}
+        completedTopics={completedTopics}
+        disabled={loading}
+        onSelectTopic={(t) => void startTopic(t)}
+      />
 
       <div className="max-w-5xl mx-auto w-full flex-1 flex gap-0 lg:gap-6 px-0 lg:px-4">
         {/* Desktop sidebar */}
@@ -784,7 +762,7 @@ function TutorContent() {
                   )}
               </div>
             ))}
-            {loading && <TutorTyping />}
+            {loading && <TutorThinking />}
             <div ref={bottomRef} />
           </div>
 
@@ -851,8 +829,12 @@ export default function TutorPage() {
   return (
     <Suspense
       fallback={
-        <div className="min-h-screen flex items-center justify-center">
-          <Loader2 className="animate-spin text-primary" size={28} />
+        <div className="min-h-screen pb-24 px-5 pt-10 max-w-lg mx-auto space-y-4">
+          <div className="h-8 w-40 rounded-xl bg-muted animate-pulse" />
+          <div className="h-4 w-64 rounded-lg bg-muted animate-pulse" />
+          <div className="h-16 w-full rounded-2xl bg-muted animate-pulse" />
+          <div className="h-16 w-full rounded-2xl bg-muted animate-pulse" />
+          <div className="h-16 w-full rounded-2xl bg-muted animate-pulse" />
         </div>
       }
     >
