@@ -5,7 +5,8 @@ import { analyzeMaterial } from "@/lib/ai/generate-questions"
 import { extractContent } from "@/lib/extract-content"
 import { buildSourceChunks } from "@/lib/ai/source-text"
 import { replaceMaterialChunks } from "@/lib/ai/retrieval"
-import { checkAiCredit, rateLimit } from "@/lib/ai/limits"
+import { limitReachedMessage } from "@/lib/ai/limits"
+import { sharedRateLimit, checkDailyAllowance, logAiUsage } from "@/lib/ai/usage"
 
 // Vercel stops the function after this many seconds
 export const maxDuration = 60
@@ -87,16 +88,17 @@ export async function POST(req: NextRequest) {
       return fail("This file is too large for the AI to read (maximum 14MB).", 413)
     }
 
-    // The file is valid and readable, so now (and only now) the daily limit is used.
-    // Unreadable files above never cost the student a credit.
-    const burst = rateLimit(`process:${user.id}`, 4, 60_000)
+    // The file is valid and readable. Daily allowance: only SUCCESSFUL runs count, so failed
+    // uploads and failed AI attempts never use it up. If the check itself breaks, the student continues.
+    const burst = await sharedRateLimit(supabase, user.id, "process-burst", 4, 60)
     if (!burst.ok) {
       return fail(`Please wait ${burst.retryAfterSec} seconds before processing another file.`, 429)
     }
-    const credit = await checkAiCredit(supabase, "process-material")
-    if (!credit.ok) {
-      return fail(credit.message, credit.status)
+    const allowance = await checkDailyAllowance(supabase, "process-material")
+    if (!allowance.allowed) {
+      return fail(limitReachedMessage("process-material"), 429)
     }
+    const processStartedAt = Date.now()
 
     await setProgress("writing", 20)
 
@@ -109,12 +111,25 @@ export async function POST(req: NextRequest) {
     if (!analysis.ok) {
       // Log the real reason for developers; show a short friendly message to students
       console.error("process-material AI error:", analysis.error)
+      // Logged as a failure: it does NOT use up the student's daily allowance
+      await logAiUsage(supabase, {
+        feature: "process-material",
+        durationMs: Date.now() - processStartedAt,
+        ok: false,
+        errorCategory: "provider",
+      })
       return fail(
         "The AI is busy or could not read this file right now. Please try again in a few minutes. If it is a scan or photo, make sure it is clear."
       )
     }
 
     if (analysis.questions.length === 0) {
+      await logAiUsage(supabase, {
+        feature: "process-material",
+        durationMs: Date.now() - processStartedAt,
+        ok: false,
+        errorCategory: "no_content",
+      })
       return fail(
         "The AI could not find readable content in this file. If it is a scan or photo, make sure it is clear and well lit."
       )
@@ -194,6 +209,13 @@ export async function POST(req: NextRequest) {
     }
 
     await setProgress("done", 100)
+
+    // Only now does this run count toward the daily allowance
+    await logAiUsage(supabase, {
+      feature: "process-material",
+      durationMs: Date.now() - processStartedAt,
+      ok: true,
+    })
 
     return NextResponse.json({ success: true, questionsGenerated: analysis.questions.length })
   } catch (err) {
