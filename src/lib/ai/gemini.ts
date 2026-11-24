@@ -245,3 +245,177 @@ export function parseJson<T>(text: string): T | null {
     return null
   }
 }
+
+// ---------------------------------------------------------------------------
+// Streaming: the answer arrives piece by piece, so the student starts reading at once.
+// ---------------------------------------------------------------------------
+
+export type GeminiStreamResult =
+  | { ok: true; model: string; chunks: AsyncGenerator<string, void, undefined> }
+  | { ok: false; error: string }
+
+function textFromEvent(ev: string): string {
+  const data = ev
+    .split("\n")
+    .filter((l) => l.startsWith("data:"))
+    .map((l) => l.slice(5).trim())
+    .join("")
+  if (!data || data === "[DONE]") return ""
+  try {
+    const parts: ReplyPart[] = JSON.parse(data)?.candidates?.[0]?.content?.parts ?? []
+    return parts
+      .filter((p) => p.text && !p.thought)
+      .map((p) => p.text)
+      .join("")
+  } catch {
+    return ""
+  }
+}
+
+/**
+ * Same models and fallbacks as callGemini, but the text comes back as a stream.
+ * The first piece is read BEFORE returning, so a failing model is skipped just like before.
+ * If every Gemini model fails, the backup provider answers in one piece.
+ */
+export async function streamGemini(options: {
+  parts: GeminiPart[]
+  maxOutputTokens?: number
+  timeoutMs?: number
+  systemInstruction?: string
+}): Promise<GeminiStreamResult> {
+  const apiKey = process.env.GEMINI_API_KEY
+  const errors: string[] = []
+  const deadline = Date.now() + (options.timeoutMs ?? 40000)
+  let sawQuota = false
+
+  if (apiKey) {
+    for (const model of modelList()) {
+      const remaining = deadline - Date.now()
+      if (remaining < 3000) break
+
+      // One timer covers the whole answer, including the part still being streamed
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), remaining)
+      const stop = () => clearTimeout(timer)
+
+      try {
+        const res = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+            body: JSON.stringify({
+              contents: [{ role: "user", parts: options.parts }],
+              ...(options.systemInstruction
+                ? { systemInstruction: { parts: [{ text: options.systemInstruction }] } }
+                : {}),
+              generationConfig: { maxOutputTokens: options.maxOutputTokens ?? 8192 },
+            }),
+            signal: controller.signal,
+          }
+        )
+
+        if (!res.ok || !res.body) {
+          const body = await res.text().catch(() => "")
+          const message = `${model}: ${shortError(body, res.status)}`
+          errors.push(message)
+          console.error("Gemini stream error:", message)
+          stop()
+          if (isQuotaStatus(res.status, body)) {
+            sawQuota = true
+            break
+          }
+          if (res.status === 401 || res.status === 403) break
+          continue
+        }
+
+        // Read until the first piece of text arrives
+        const reader = res.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ""
+        const firstTexts: string[] = []
+        let ended = false
+        while (firstTexts.length === 0 && !ended) {
+          const { done, value } = await reader.read()
+          if (done) {
+            ended = true
+            break
+          }
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n")
+          const events = buffer.split("\n\n")
+          buffer = events.pop() ?? ""
+          for (const ev of events) {
+            const text = textFromEvent(ev)
+            if (text) firstTexts.push(text)
+          }
+        }
+        if (firstTexts.length === 0) {
+          errors.push(`${model}: empty reply`)
+          stop()
+          continue
+        }
+
+        // Hand the rest of the stream over, starting with what is already read
+        async function* continued(): AsyncGenerator<string, void, undefined> {
+          try {
+            for (const piece of firstTexts) yield piece
+            let carry = buffer
+            while (!ended) {
+              const { done, value } = await reader.read()
+              if (done) break
+              carry += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n")
+              const events = carry.split("\n\n")
+              carry = events.pop() ?? ""
+              for (const ev of events) {
+                const text = textFromEvent(ev)
+                if (text) yield text
+              }
+            }
+            const tail = textFromEvent(carry)
+            if (tail) yield tail
+          } finally {
+            stop()
+          }
+        }
+        return { ok: true, model, chunks: continued() }
+      } catch (err) {
+        stop()
+        const message =
+          err instanceof Error && err.name === "AbortError"
+            ? `${model}: took too long to answer`
+            : `${model}: ${err instanceof Error ? err.message : "network error"}`
+        errors.push(message)
+        console.error("Gemini stream error:", message)
+      }
+    }
+  } else {
+    errors.push("GEMINI_API_KEY not set")
+  }
+
+  // Backup provider answers in one piece
+  const fallback = await callFallback({
+    parts: options.parts,
+    json: false,
+    maxOutputTokens: options.maxOutputTokens,
+    timeoutMs: Math.max(8000, Math.min(25000, deadline - Date.now())),
+    systemInstruction: options.systemInstruction,
+  })
+  if (fallback?.ok) {
+    const text = fallback.text
+    const model = fallback.model
+    async function* single(): AsyncGenerator<string, void, undefined> {
+      yield text
+    }
+    return { ok: true, model, chunks: single() }
+  }
+  if (fallback && !fallback.ok) errors.push(fallback.error)
+
+  if (sawQuota && !process.env.FALLBACK_LLM_API_KEY) {
+    return {
+      ok: false,
+      error:
+        "AI quota reached and no backup provider is configured. Add FALLBACK_LLM_API_KEY (e.g. Groq) on Vercel.",
+    }
+  }
+  return { ok: false, error: errors.slice(-3).join(" | ") || "Unknown AI error" }
+}
