@@ -35,6 +35,9 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
+  // On Android, the on-screen keyboard shrinks the page instead of covering it,
+  // so the message box and its Send button stay visible above the keyboard.
+  interactiveWidget: "resizes-content",
 }
 
 // Runs before the first paint: picks the saved theme (or the phone's setting)
