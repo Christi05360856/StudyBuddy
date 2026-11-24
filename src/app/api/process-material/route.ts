@@ -5,6 +5,7 @@ import { analyzeMaterial } from "@/lib/ai/generate-questions"
 import { extractContent } from "@/lib/extract-content"
 import { buildSourceChunks } from "@/lib/ai/source-text"
 import { replaceMaterialChunks } from "@/lib/ai/retrieval"
+import { checkAiCredit, rateLimit } from "@/lib/ai/limits"
 
 // Vercel stops the function after this many seconds
 export const maxDuration = 60
@@ -18,7 +19,8 @@ const MAX_INLINE_BYTES = 14 * 1024 * 1024
 
 export async function POST(req: NextRequest) {
   try {
-    const { materialId } = await req.json()
+    const body = await req.json().catch(() => null)
+    const materialId = body && typeof body.materialId === "string" ? body.materialId : ""
     if (!materialId) {
       return NextResponse.json({ error: "materialId required" }, { status: 400 })
     }
@@ -83,6 +85,17 @@ export async function POST(req: NextRequest) {
 
     if (extracted.input.type === "inline" && file.size > MAX_INLINE_BYTES) {
       return fail("This file is too large for the AI to read (maximum 14MB).", 413)
+    }
+
+    // The file is valid and readable, so now (and only now) the daily limit is used.
+    // Unreadable files above never cost the student a credit.
+    const burst = rateLimit(`process:${user.id}`, 4, 60_000)
+    if (!burst.ok) {
+      return fail(`Please wait ${burst.retryAfterSec} seconds before processing another file.`, 429)
+    }
+    const credit = await checkAiCredit(supabase, "process-material")
+    if (!credit.ok) {
+      return fail(credit.message, credit.status)
     }
 
     await setProgress("writing", 20)
