@@ -2,12 +2,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { callGemini, parseJson } from "@/lib/ai/gemini"
 import { createClient } from "@/lib/supabase/server"
-import {
-  AI_LIMITS,
-  limitReachedMessage,
-  isMissingLimitSetup,
-  providerBusyMessage,
-} from "@/lib/ai/limits"
+import { checkAiCredit, rateLimit, providerBusyMessage } from "@/lib/ai/limits"
 import {
   buildTutorSystemInstruction,
   buildTutorUserContent,
@@ -170,6 +165,9 @@ Rules:
 - Keep JSON compact; content plain text (no LaTeX $...$).`
 }
 
+// Vercel stops the function after this many seconds
+export const maxDuration = 60
+
 export async function POST(req: NextRequest) {
   const t0 = Date.now()
   let metricAction = "student_message"
@@ -182,20 +180,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Please log in again." }, { status: 401 })
     }
 
-    const { data: allowed, error: creditError } = await supabase.rpc("consume_ai_credit", {
-      feature: "tutor",
-      daily_limit: AI_LIMITS.tutor,
-    })
-    if (creditError) {
-      console.error("consume_ai_credit error:", creditError)
-      if (!isMissingLimitSetup(creditError)) {
-        // fail-open
-      }
-    } else if (allowed === false) {
-      return NextResponse.json({ error: limitReachedMessage("tutor") }, { status: 429 })
+    // 1) Read and validate the request FIRST, so bad requests never cost a credit
+    const body = await req.json().catch(() => null)
+    if (!body || typeof body !== "object") {
+      return NextResponse.json({ error: "Invalid request." }, { status: 400 })
     }
-
-    const body = await req.json()
     const {
       message,
       level = "standard",
@@ -223,6 +212,19 @@ export async function POST(req: NextRequest) {
 
     if (!textMessage || textMessage.length > 4000) {
       return NextResponse.json({ error: "message required" }, { status: 400 })
+    }
+
+    // 2) Burst protection, then the daily credit (fails closed on unexpected errors)
+    const burst = rateLimit(`tutor:${user.id}`, 10, 60_000)
+    if (!burst.ok) {
+      return NextResponse.json(
+        { error: `You are sending messages too fast. Please wait ${burst.retryAfterSec} seconds.` },
+        { status: 429, headers: { "Retry-After": String(burst.retryAfterSec) } }
+      )
+    }
+    const credit = await checkAiCredit(supabase, "tutor")
+    if (!credit.ok) {
+      return NextResponse.json({ error: credit.message }, { status: credit.status })
     }
 
     const teachingLevel = normalizeLevel(level)
@@ -389,7 +391,7 @@ export async function POST(req: NextRequest) {
       parts: [{ text: userContent }],
       json: true,
       maxOutputTokens: tokenBudgetFor(action),
-      timeoutMs: 45000,
+      timeoutMs: 30000,
     })
 
     if (!result.ok) {
@@ -418,7 +420,8 @@ export async function POST(req: NextRequest) {
     }>(modelText)
 
     // One recovery attempt if the model returned invalid JSON for a structured call
-    if (!parsed && looksLikeStructuredPayload(modelText)) {
+    // Only retry when there is still time, so the student never waits more than about 45 seconds in total
+    if (!parsed && looksLikeStructuredPayload(modelText) && Date.now() - t0 < 20000) {
       const retry = await callGemini({
         systemInstruction:
           systemInstruction +
@@ -426,7 +429,7 @@ export async function POST(req: NextRequest) {
         parts: [{ text: userContent }],
         json: true,
         maxOutputTokens: tokenBudgetFor(action),
-        timeoutMs: 35000,
+        timeoutMs: 15000,
       })
       if (retry.ok) {
         modelText = retry.text
@@ -521,6 +524,9 @@ export async function POST(req: NextRequest) {
             questionId: checkBlock.questionId,
             expectedAnswer: checkBlock.expectedAnswer || null,
             prompt: checkBlock.prompt,
+            // Saved so the question can be shown again when the student reopens the topic
+            answerType: checkBlock.answerType,
+            options: checkBlock.options ?? null,
           }
         : action === "submit_answer"
           ? null
