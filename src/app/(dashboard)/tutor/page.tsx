@@ -1,7 +1,7 @@
 // PATH: src/app/(dashboard)/tutor/page.tsx
 "use client"
 
-import { useState, useRef, useEffect, Suspense } from "react"
+import { useState, useRef, useEffect, useCallback, Suspense } from "react"
 import { useSearchParams, useRouter } from "next/navigation"
 import { BottomNav } from "@/components/bottom-nav"
 import { Button } from "@/components/ui/button"
@@ -292,6 +292,26 @@ function prettyStage(stage: string | null): string | undefined {
   return stage.replace(/_/g, " ")
 }
 
+// The composer grows with the text up to this height, then scrolls inside itself
+const COMPOSER_MAX_PX = 160
+// The server rejects anything longer
+const MAX_MESSAGE_CHARS = 4000
+
+/** Undo a turn that failed: drop the unfinished tutor bubble and the student's own bubble. */
+function rollbackTurn(prev: Message[], userText: string | null): Message[] {
+  const next = [...prev]
+  if (next.length && next[next.length - 1].role === "assistant") next.pop()
+  if (
+    userText !== null &&
+    next.length &&
+    next[next.length - 1].role === "user" &&
+    next[next.length - 1].content === userText
+  ) {
+    next.pop()
+  }
+  return next
+}
+
 function TutorContent() {
   const searchParams = useSearchParams()
   const router = useRouter()
@@ -317,7 +337,9 @@ function TutorContent() {
   const [pendingCheck, setPendingCheck] = useState<Message["check"]>(null)
   const [checkBusy, setCheckBusy] = useState(false)
   const [thinkingMode, setThinkingMode] = useState<ThinkingMode>("default")
-  const [draft, setDraft] = useState("") // preserved on failed send
+  const [sendError, setSendError] = useState<string | null>(null)
+  const [isTouch, setIsTouch] = useState(false) // phones/tablets: Enter = new line
+  const [keyboardOpen, setKeyboardOpen] = useState(false)
   const [outlineOpen, setOutlineOpen] = useState(false)
   const [lessonStage, setLessonStage] = useState<string | null>(null)
   const [materialFileLabel, setMaterialFileLabel] = useState<string>("Lecture note")
@@ -325,11 +347,66 @@ function TutorContent() {
   const [phase, setPhase] = useState<"topics" | "chat">("topics")
 
   const bottomRef = useRef<HTMLDivElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const composerRef = useRef<HTMLDivElement>(null)
   const supabase = createClient()
 
+  // Keep the newest message visible ABOVE the pinned composer (and the bottom menu)
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" })
-  }, [messages])
+    const el = bottomRef.current
+    if (!el) return
+    const composerH = composerRef.current?.offsetHeight ?? 120
+    el.style.scrollMarginBottom = `${composerH + 16}px`
+    el.scrollIntoView({ behavior: "smooth", block: "end" })
+  }, [messages, loading])
+
+  // Phones have no Shift+Enter, so on touch screens Enter makes a new line and the Send button sends
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return
+    const mq = window.matchMedia("(pointer: coarse)")
+    const update = () => setIsTouch(mq.matches)
+    update()
+    mq.addEventListener?.("change", update)
+    return () => mq.removeEventListener?.("change", update)
+  }, [])
+
+  // Detect the on-screen keyboard so the composer is never hidden behind it
+  useEffect(() => {
+    const vv = window.visualViewport
+    if (!vv) return
+    let maxH = vv.height
+    let lastW = vv.width
+    const onResize = () => {
+      if (vv.width !== lastW) {
+        // rotation or pinch-zoom: start measuring again
+        lastW = vv.width
+        maxH = vv.height
+      }
+      maxH = Math.max(maxH, vv.height)
+      const open = maxH - vv.height > 150
+      setKeyboardOpen(open)
+      if (open && document.activeElement === textareaRef.current) {
+        textareaRef.current?.scrollIntoView({ block: "nearest" })
+      }
+    }
+    onResize()
+    vv.addEventListener("resize", onResize)
+    return () => vv.removeEventListener("resize", onResize)
+  }, [])
+
+  // Auto-resize the composer; after the max height it scrolls inside
+  const resizeComposer = useCallback(() => {
+    const el = textareaRef.current
+    if (!el) return
+    el.style.height = "auto"
+    const full = el.scrollHeight
+    el.style.height = `${Math.min(full, COMPOSER_MAX_PX)}px`
+    el.style.overflowY = full > COMPOSER_MAX_PX ? "auto" : "hidden"
+  }, [])
+
+  useEffect(() => {
+    resizeComposer()
+  }, [input, phase, resizeComposer])
 
   // Load material + topics when materialId is present
   useEffect(() => {
@@ -402,7 +479,6 @@ function TutorContent() {
     setPendingCheck(check)
     const st = stageFrom(data as { state?: { currentStage?: string } | null })
     if (st) setLessonStage(st)
-    setDraft("")
     setMessages((prev) => {
       const last = prev[prev.length - 1]
       if (last?.role === "assistant") {
@@ -524,7 +600,7 @@ function TutorContent() {
     setLessonStage(null)
     setOutlineOpen(false)
     setInput("")
-    setDraft("")
+    setSendError(null)
     setPhase("topics")
   }
 
@@ -543,7 +619,12 @@ function TutorContent() {
     const text = (preset ?? input).trim()
     if (!text || loading) return
 
-    setDraft(text)
+    if (text.length > MAX_MESSAGE_CHARS) {
+      setSendError(`That message is too long (max ${MAX_MESSAGE_CHARS} characters). Please shorten it.`)
+      return
+    }
+
+    setSendError(null)
     setInput("")
     setMessages((prev) => [...prev, { role: "user", content: text, createdAt: Date.now() }])
     setLoading(true)
@@ -580,15 +661,12 @@ function TutorContent() {
       if (!ok) throw new Error(String(data.error || "Failed"))
       applyTutorData(data)
     } catch (err) {
-      setInput((prev) => prev || draft)
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content:
-            (err instanceof Error && err.message) || "Something went wrong. Please try again.",
-        },
-      ])
+      // Put the student's text back in the box (even if they started typing something else)
+      setInput((prev) => (prev.trim() ? `${text}\n${prev}` : text))
+      setMessages((prev) => rollbackTurn(prev, text))
+      setSendError(
+        (err instanceof Error && err.message) || "Could not send. Your message is still in the box."
+      )
     } finally {
       setLoading(false)
     }
@@ -600,7 +678,7 @@ function TutorContent() {
   ) => {
     const trimmed = text.trim()
     if (!trimmed || loading) return
-    setInput("")
+    setSendError(null)
     setMessages((prev) => [...prev, { role: "user", content: trimmed, createdAt: Date.now() }])
     setLoading(true)
     setThinkingMode(action)
@@ -635,14 +713,8 @@ function TutorContent() {
       if (!ok) throw new Error(String(data.error || "Failed"))
       applyTutorData(data)
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content:
-            (err instanceof Error && err.message) || "Something went wrong. Please try again.",
-        },
-      ])
+      setMessages((prev) => rollbackTurn(prev, trimmed))
+      setSendError((err instanceof Error && err.message) || "Something went wrong. Please try again.")
     } finally {
       setLoading(false)
     }
@@ -651,7 +723,9 @@ function TutorContent() {
   const submitCheckAnswer = async (questionId: string, text: string) => {
     if (!text.trim() || checkBusy || loading) return
     setCheckBusy(true)
+    setSendError(null)
     const answerLine = `ANS: ${text.trim()}`
+    const checkSnapshot = messages[messages.length - 1]?.check ?? pendingCheck
     setMessages((prev) => {
       const next = prev.map((m, idx) =>
         idx === prev.length - 1 && m.check
@@ -695,14 +769,18 @@ function TutorContent() {
       if (!ok) throw new Error(String(data.error || "Failed"))
       applyTutorData(data)
     } catch (err) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content:
-            (err instanceof Error && err.message) || "Could not check that answer. Try again.",
-        },
-      ])
+      // Give the question back so the student can answer again
+      setMessages((prev) =>
+        rollbackTurn(prev, answerLine).map((m, idx, arr) =>
+          idx === arr.length - 1 && m.check
+            ? { ...m, checkLocked: false, selectedAnswer: undefined }
+            : m
+        )
+      )
+      setPendingCheck(checkSnapshot)
+      setSendError(
+        (err instanceof Error && err.message) || "Could not check that answer. Please try again."
+      )
     } finally {
       setLoading(false)
       setCheckBusy(false)
@@ -788,6 +866,9 @@ function TutorContent() {
 
   return (
     <div className="min-h-screen pb-24 flex flex-col bg-background">
+      {isTouch && keyboardOpen && (
+        <style>{`[data-app-nav]{display:none !important}`}</style>
+      )}
       {/* Top bar */}
       <header className="sticky top-0 z-20 border-b border-border bg-card/95 backdrop-blur-md">
         <div className="max-w-5xl mx-auto px-4 h-14 flex items-center gap-3">
@@ -877,10 +958,10 @@ function TutorContent() {
               return (
               <div key={i} className="space-y-2">
                 {showDay ? <DaySeparator label={day} /> : null}
-                <TutorBubble role={m.role} content={m.content} at={m.createdAt} />
                 {m.role === "assistant" && m.evaluation && (
                   <EvaluationCard evaluation={m.evaluation} />
                 )}
+                <TutorBubble role={m.role} content={m.content} at={m.createdAt} />
                 {m.role === "assistant" &&
                   m.check &&
                   (m.checkLocked || (i === messages.length - 1 && pendingCheck)) && (
@@ -898,55 +979,100 @@ function TutorContent() {
             <div ref={bottomRef} />
           </div>
 
-          {/* Quick actions */}
-          {!loading && messages.length > 0 && (
-            <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1">
-              {(
-                [
-                  { label: "Explain simpler", action: "request_reexplanation" as const, text: "Explain this more simply with a different example" },
-                  { label: "Hint", action: "request_hint" as const, text: "Give me a hint — not the full answer" },
-                  { label: "Recap", action: "recap" as const, text: "Recap the key points so far" },
-                  { label: "Worked example", action: "student_message" as const, text: "Work through a calculation or procedure step by step with an example" },
-                ] as const
-              ).map((chip) => (
-                <button
-                  key={chip.label}
-                  type="button"
-                  disabled={loading}
-                  onClick={() => void sendAction(chip.action, chip.text)}
-                  className="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium bg-muted text-foreground border border-border hover:border-primary/40"
-                >
-                  {chip.label}
-                </button>
-              ))}
-            </div>
-          )}
+          {/* Pinned bottom area: quick actions + composer (stays above the keyboard and the bottom menu) */}
+          <div
+            ref={composerRef}
+            className="sticky z-10 -mx-4 px-4 pt-2 pb-2 bg-background/95 backdrop-blur border-t border-border/60 bottom-[var(--composer-bottom)] [--composer-bottom:calc(4rem+env(safe-area-inset-bottom,0px))] lg:[--composer-bottom:0px]"
+            style={isTouch && keyboardOpen ? { bottom: 0 } : undefined}
+          >
+            {/* Quick actions (hidden while typing on a phone to save space) */}
+            {!loading && messages.length > 0 && !(isTouch && keyboardOpen) && (
+              <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1">
+                {(
+                  [
+                    { label: "Explain simpler", action: "request_reexplanation" as const, text: "Explain this more simply with a different example" },
+                    { label: "Hint", action: "request_hint" as const, text: "Give me a hint — not the full answer" },
+                    { label: "Recap", action: "recap" as const, text: "Recap the key points so far" },
+                    { label: "Worked example", action: "student_message" as const, text: "Work through a calculation or procedure step by step with an example" },
+                  ] as const
+                ).map((chip) => (
+                  <button
+                    key={chip.label}
+                    type="button"
+                    disabled={loading}
+                    onClick={() => void sendAction(chip.action, chip.text)}
+                    className="shrink-0 px-3 py-1.5 rounded-full text-xs font-medium bg-muted text-foreground border border-border hover:border-primary/40"
+                  >
+                    {chip.label}
+                  </button>
+                ))}
+              </div>
+            )}
 
-          {/* Composer */}
-          <div className="flex gap-2 pt-1 items-end">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
+            {sendError && (
+              <div
+                role="alert"
+                className="mb-2 flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-300"
+              >
+                <span className="flex-1 leading-relaxed">{sendError}</span>
+                <button
+                  type="button"
+                  onClick={() => setSendError(null)}
+                  className="shrink-0 font-semibold"
+                  aria-label="Dismiss"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {/* Composer */}
+            <div className="flex gap-2 items-end">
+              <textarea
+                ref={textareaRef}
+                value={input}
+                rows={1}
+                maxLength={MAX_MESSAGE_CHARS}
+                onChange={(e) => {
+                  setInput(e.target.value)
+                  if (sendError) setSendError(null)
+                }}
+                onKeyDown={(e) => {
+                  // Computer: Enter sends, Shift+Enter = new line.
+                  // Phone/tablet: Enter always = new line; the Send button sends.
+                  if (e.key !== "Enter" || e.shiftKey || isTouch) return
+                  if (e.nativeEvent.isComposing || e.keyCode === 229) return
                   e.preventDefault()
                   void send()
-                }
-              }}
-              placeholder="Ask a question or type an answer…"
-              disabled={loading}
-              rows={1}
-              className="flex-1 min-h-12 max-h-36 resize-none rounded-xl border border-border bg-card px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 disabled:opacity-50 leading-relaxed"
-              aria-label="Message the tutor"
-            />
-            <Button
-              onClick={() => void send()}
-              disabled={loading || !input.trim()}
-              className="h-12 w-12 rounded-xl p-0 shrink-0"
-              aria-label="Send"
-            >
-              <Send size={18} />
-            </Button>
+                }}
+                onFocus={() => {
+                  window.setTimeout(
+                    () => textareaRef.current?.scrollIntoView({ block: "nearest" }),
+                    300
+                  )
+                }}
+                enterKeyHint={isTouch ? "enter" : "send"}
+                autoCapitalize="sentences"
+                placeholder="Ask a question or type an answer…"
+                className="flex-1 min-h-12 resize-none rounded-xl border border-border bg-card px-4 py-3 text-base md:text-sm focus:outline-none focus:ring-2 focus:ring-primary/20 leading-relaxed"
+                aria-label="Message the tutor"
+              />
+              <Button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()} // keeps the keyboard open when tapping Send
+                onClick={() => void send()}
+                disabled={loading || !input.trim()}
+                className="h-12 w-12 rounded-xl p-0 shrink-0"
+                aria-label="Send"
+              >
+                <Send size={18} />
+              </Button>
+            </div>
+            {input.length > MAX_MESSAGE_CHARS - 500 && (
+              <p className="mt-1 text-right text-[11px] text-gray-500">
+                {input.length}/{MAX_MESSAGE_CHARS}
+              </p>
+            )}
           </div>
 
           <button
