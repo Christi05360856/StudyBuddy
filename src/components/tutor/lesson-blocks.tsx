@@ -68,7 +68,8 @@ export function formatMessageTime(ts: number | string | Date | null | undefined)
   if (ts == null) return ""
   const d = typeof ts === "number" || typeof ts === "string" ? new Date(ts) : ts
   if (Number.isNaN(d.getTime())) return ""
-  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+  // Always a 12-hour clock (e.g. 12:34 AM), whatever the phone's region setting is
+  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })
 }
 
 export function formatDayLabel(ts: number | string | Date): string {
