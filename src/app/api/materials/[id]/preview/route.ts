@@ -36,11 +36,12 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     } = await supabase.auth.getUser()
     if (!user) return NextResponse.json({ error: "Please log in again." }, { status: 401 })
 
-    // Same access rules as the reader page: the database decides what this student may open
+    // Only the owner can open a note (checked here AND by the database rules)
     const { data: material } = await supabase
       .from("materials")
       .select("id, file_path")
       .eq("id", id)
+      .eq("user_id", user.id)
       .maybeSingle()
     if (!material) return NextResponse.json({ error: "Material not found." }, { status: 404 })
 
