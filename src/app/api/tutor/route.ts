@@ -1,8 +1,11 @@
 // PATH: src/app/api/tutor/route.ts
 import { NextRequest, NextResponse } from "next/server"
-import { callGemini, parseJson } from "@/lib/ai/gemini"
+import { streamGemini, parseJson } from "@/lib/ai/gemini"
+import { TutorStreamParser, stripLeadingVerdict, type StreamOutcome } from "@/lib/ai/tutor-stream"
+import { sealSecret, openSecret } from "@/lib/ai/secret-box"
 import { createClient } from "@/lib/supabase/server"
-import { checkAiCredit, rateLimit, providerBusyMessage } from "@/lib/ai/limits"
+import { providerBusyMessage, TUTOR_PROTECTION } from "@/lib/ai/limits"
+import { sharedRateLimit, acquireGenerationSlot, logAiUsage, type Slot } from "@/lib/ai/usage"
 import {
   buildTutorSystemInstruction,
   buildTutorUserContent,
@@ -31,25 +34,6 @@ function looksLikeStructuredPayload(text: string): boolean {
   if (t.includes('"replyMarkdown"') || t.includes('"statePatch"') || t.includes('"blocks"')) return true
   if (t.includes("```json")) return true
   return false
-}
-
-const VERDICT_WORD =
-  "(?:that(?:'s| is)\\s+)?(?:correct|right|incorrect|wrong|exactly|well done|great job|good job|not quite|partly correct|partially correct|almost)(?:\\s+answer)?"
-const VERDICT_ONLY_LINE = new RegExp(
-  `^\\s*(?:#{1,6}\\s*)?(?:\\*\\*|__)?\\s*${VERDICT_WORD}\\s*[!.:✅❌✓✔]*\\s*(?:\\*\\*|__)?\\s*$`,
-  "i"
-)
-
-/** Drops a leading line that only says "Correct!" etc. — the verdict card already says it. */
-function stripLeadingVerdict(markdown: string): string {
-  const lines = markdown.replace(/\r/g, "").split("\n")
-  let i = 0
-  while (i < lines.length && lines[i].trim() === "") i++
-  if (i < lines.length && VERDICT_ONLY_LINE.test(lines[i])) {
-    const rest = lines.slice(i + 1).join("\n").trim()
-    if (rest) return rest
-  }
-  return markdown
 }
 
 function verdictLabel(result: string): string {
@@ -130,39 +114,23 @@ Answer the student directly. Use the teaching cycle only when it helps. If check
   }
 }
 
-function structuredOutputSpec(): string {
-  return `Return ONLY valid JSON (no markdown fences) with this shape:
-{
-  "replyMarkdown": "optional plain markdown fallback if blocks empty",
-  "statePatch": {
-    "currentStage": "orient|explain|demonstrate|check|evaluate|adapt|consolidate",
-    "currentLevel": "very_simple|standard|advanced|exam_ready",
-    "understoodConcepts": [],
-    "strugglingConcepts": [],
-    "misconceptions": [{ "concept": "", "description": "", "evidence": "" }],
-    "recentPerformance": [{ "questionId": "", "result": "correct|partial|incorrect" }],
-    "nextRecommendedAction": "continue|explain_differently|give_hint|practice|recap",
-    "completedSections": []
-  },
-  "blocks": [
-    { "type": "explanation|example|code|callout|recap", "title": "optional", "content": "..." },
-    {
-      "type": "understanding_check",
-      "questionId": "q1",
-      "prompt": "question text",
-      "answerType": "single_choice",
-      "options": [{ "id": "a", "text": "..." }, { "id": "b", "text": "..." }],
-      "expectedAnswer": "a"
-    }
-  ],
-  "evaluation": null
-}
+function streamProtocolSpec(): string {
+  return `OUTPUT FORMAT — reply in EXACTLY this plain-text layout. Do NOT output JSON for the whole reply and do not wrap anything in code fences.
+
+@@EVALUATION
+{"questionId":"q1","result":"correct","feedback":"1-3 specific sentences","recommendedAction":"continue","misconception":{"detected":false,"label":"","explanation":""}}
+@@REPLY
+(the teaching text in Markdown)
+@@STATE
+{"statePatch":{"currentStage":"explain"},"check":null}
 
 Rules:
-- Prefer blocks over a long replyMarkdown.
-- understanding_check: never put the answer in prompt/options text.
-- evaluation required for submit_answer; otherwise null.
-- Keep JSON compact; content plain text (no LaTeX $...$).`
+- Include the @@EVALUATION section ONLY when ACTION is submit_answer, as ONE line of JSON. result is correct | partially_correct | incorrect. recommendedAction is continue | explain_differently | give_hint | practice. For every other action leave the whole @@EVALUATION section out.
+- @@REPLY is what the student reads. Wherever the ACTION text above says "blocks", write that teaching here as Markdown. Teach directly. Never mention these section names. Never repeat the verdict from the evaluation. Never put the understanding check in the reply text.
+- @@STATE is ONE line of compact JSON. statePatch may contain: currentStage (orient|explain|demonstrate|check|evaluate|adapt|consolidate), currentLevel (very_simple|standard|advanced|exam_ready), understoodConcepts[], strugglingConcepts[], misconceptions[{concept,description,evidence}], recentPerformance[{questionId,result: correct|partial|incorrect}], nextRecommendedAction (continue|explain_differently|give_hint|practice|recap), completedSections[].
+- check is null, or ONE understanding check: {"questionId":"q2","prompt":"question text","answerType":"single_choice","options":[{"id":"a","text":"..."},{"id":"b","text":"..."}],"expectedAnswer":"a"}. Wherever the ACTION text says "understanding_check", this check object is it. Never put the answer in the prompt or options.
+- The three marker lines (@@EVALUATION, @@REPLY, @@STATE) must each be alone on their own line.
+- Plain-text math only (no LaTeX $...$).`
 }
 
 // Vercel stops the function after this many seconds
@@ -170,6 +138,7 @@ export const maxDuration = 60
 
 export async function POST(req: NextRequest) {
   const t0 = Date.now()
+  let slot: Slot | null = null
   let metricAction = "student_message"
   try {
     const supabase = await createClient()
@@ -180,7 +149,10 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Please log in again." }, { status: 401 })
     }
 
-    // 1) Read and validate the request FIRST, so bad requests never cost a credit
+    // 1) Read and validate the request first. Oversized or malformed requests stop here.
+    if (Number(req.headers.get("content-length") || 0) > 200_000) {
+      return NextResponse.json({ error: "That request is too large." }, { status: 413 })
+    }
     const body = await req.json().catch(() => null)
     if (!body || typeof body !== "object") {
       return NextResponse.json({ error: "Invalid request." }, { status: 400 })
@@ -214,17 +186,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "message required" }, { status: 400 })
     }
 
-    // 2) Burst protection, then the daily credit (fails closed on unexpected errors)
-    const burst = rateLimit(`tutor:${user.id}`, 10, 60_000)
+    // 2) Abuse protection. There is NO daily message cap for the Tutor: students can study for hours.
+    //    These limits only stop scripts: a burst per minute, a ceiling per hour, and at most
+    //    a couple of answers being written at the same moment. If the counters themselves fail,
+    //    the student is let through (and it is logged).
+    const burst = await sharedRateLimit(
+      supabase, user.id, "tutor-burst", TUTOR_PROTECTION.burstMax, TUTOR_PROTECTION.burstWindowSec
+    )
     if (!burst.ok) {
+      console.warn(JSON.stringify({ type: "tutor_abuse_signal", rule: "burst", user: user.id }))
       return NextResponse.json(
-        { error: `You are sending messages too fast. Please wait ${burst.retryAfterSec} seconds.` },
+        { error: `You are sending messages very fast. Please wait ${burst.retryAfterSec} seconds, then continue.` },
         { status: 429, headers: { "Retry-After": String(burst.retryAfterSec) } }
       )
     }
-    const credit = await checkAiCredit(supabase, "tutor")
-    if (!credit.ok) {
-      return NextResponse.json({ error: credit.message }, { status: credit.status })
+    const hourly = await sharedRateLimit(
+      supabase, user.id, "tutor-hour", TUTOR_PROTECTION.hourMax, TUTOR_PROTECTION.hourWindowSec
+    )
+    if (!hourly.ok) {
+      console.warn(JSON.stringify({ type: "tutor_abuse_signal", rule: "hour", user: user.id }))
+      return NextResponse.json(
+        { error: "You have been very active for the last hour. Please pause for a few minutes, then continue — your lesson is saved." },
+        { status: 429, headers: { "Retry-After": String(Math.min(hourly.retryAfterSec || 60, 600)) } }
+      )
     }
 
     const teachingLevel = normalizeLevel(level)
@@ -240,6 +224,7 @@ export async function POST(req: NextRequest) {
       questionId?: string
       expectedAnswer?: string
       prompt?: string
+      [key: string]: unknown
     } | null = null
 
     if (sessionId) {
@@ -269,6 +254,9 @@ export async function POST(req: NextRequest) {
           sess.last_question && typeof sess.last_question === "object"
             ? (sess.last_question as { questionId?: string; expectedAnswer?: string; prompt?: string })
             : null
+        if (lastQuestion?.expectedAnswer) {
+          lastQuestion = { ...lastQuestion, expectedAnswer: openSecret(lastQuestion.expectedAnswer) ?? undefined }
+        }
       } else {
         sessionId = null
       }
@@ -313,7 +301,7 @@ export async function POST(req: NextRequest) {
 
     const systemInstruction =
       buildTutorSystemInstruction(teachingLevel) +
-      `\n\n${actionInstructions(action)}\n\n${structuredOutputSpec()}`
+      `\n\n${actionInstructions(action)}\n\n${streamProtocolSpec()}`
 
     const recent: ChatMessage[] = Array.isArray(history) ? history.slice(-10) : []
     const transcript = recent
@@ -386,71 +374,116 @@ export async function POST(req: NextRequest) {
       (pendingCheck ? `\n\n${pendingCheck}` : "") +
       (answerLine ? `\n\n${answerLine}` : "")
 
-    const result = await callGemini({
+    // ---- Only a couple of answers at a time per student (a second tab is fine) ----
+    slot = await acquireGenerationSlot(supabase, TUTOR_PROTECTION.concurrent, 90)
+    if (!slot.ok) {
+      slot = null
+      return NextResponse.json(
+        { error: "Your last answer is still being written. Please wait a moment." },
+        { status: 429 }
+      )
+    }
+
+    // ---- Ask the AI. The answer streams back piece by piece. ----
+    // Stops if the student leaves (req.signal) so nothing is wasted or saved twice.
+    const abort = new AbortController()
+    req.signal.addEventListener("abort", () => abort.abort(), { once: true })
+    const started = await streamGemini({
       systemInstruction,
       parts: [{ text: userContent }],
-      json: true,
       maxOutputTokens: tokenBudgetFor(action),
-      timeoutMs: 30000,
+      timeoutMs: 40000,
+      signal: abort.signal,
     })
 
-    if (!result.ok) {
-      console.error("Tutor error:", result.error)
-      logTutorMetric({
-        action: metricAction,
-        durationMs: Date.now() - t0,
-        ok: false,
-        failureCategory: classifyTutorFailure(result.error),
-      })
+    if (!started.ok) {
+      console.error("Tutor error:", started.error)
+      const category = abort.signal.aborted ? "cancelled" : classifyTutorFailure(started.error)
+      logTutorMetric({ action: metricAction, durationMs: Date.now() - t0, ok: false, failureCategory: category })
+      void logAiUsage(supabase, { feature: "tutor", durationMs: Date.now() - t0, ok: false, errorCategory: category })
+      await slot.release()
+      slot = null
+      // A temporary provider problem — never shown as a "limit reached" message
       return NextResponse.json({ error: providerBusyMessage() }, { status: 503 })
     }
+    const releaseSlot = slot.release
+    slot = null // from here the stream owns the slot
 
-    // Parse structured JSON — NEVER surface raw model JSON to the student
-    let blocks: LessonBlock[] = []
-    let evaluation = null as ReturnType<typeof parseEvaluation>
-    let reply = ""
-    let parseOk = false
+    const model = started.model
+    const startedChunks = started.chunks
+    const userIdForSave = user.id
+    const incomingLastQuestion = lastQuestion
+    const learningStateAtStart = learningState
+    const finalSessionId = sessionId
 
-    let modelText = result.text
-    let parsed = parseJson<{
-      replyMarkdown?: unknown
-      statePatch?: Partial<LearningState>
-      blocks?: unknown
-      evaluation?: unknown
-    }>(modelText)
+    /** Turns the finished answer into the saved + returned result. Throws a student-friendly message. */
+    const finalizeTurn = async (first: StreamOutcome) => {
+      let outcome = first
+      let blocks: LessonBlock[] = []
+      let evaluation = null as ReturnType<typeof parseEvaluation>
+      let reply = ""
+      let statePatch: Partial<LearningState> | undefined
+      let parseOk = true
 
-    // One recovery attempt if the model returned invalid JSON for a structured call
-    // Only retry when there is still time, so the student never waits more than about 45 seconds in total
-    if (!parsed && looksLikeStructuredPayload(modelText) && Date.now() - t0 < 20000) {
-      const retry = await callGemini({
-        systemInstruction:
-          systemInstruction +
-          "\n\nYour previous reply was invalid JSON. Reply again with ONLY valid JSON matching the schema. No markdown fences.",
-        parts: [{ text: userContent }],
-        json: true,
-        maxOutputTokens: tokenBudgetFor(action),
-        timeoutMs: 15000,
-      })
-      if (retry.ok) {
-        modelText = retry.text
-        parsed = parseJson(modelText)
+      // The AI wrapped the format in a code fence: unwrap and read it as normal
+      if (outcome.mode === "json") {
+        const unfenced = outcome.raw.replace(/^\s*```[a-z]*\s*\n/i, "").replace(/\n?```\s*$/, "")
+        if (unfenced.includes("@@REPLY")) {
+          const again = new TutorStreamParser({ onContent: () => {}, onEvaluationText: () => {} })
+          again.feed(unfenced)
+          outcome = again.finish()
+        }
       }
-    }
 
-    if (parsed) {
-      parseOk = true
-      blocks = parseLessonBlocks(parsed.blocks)
-      evaluation = parseEvaluation(parsed.evaluation)
-      const fromBlocks = blocksToMarkdown(blocks)
-      const fromMd =
-        typeof parsed.replyMarkdown === "string" ? parsed.replyMarkdown.trim() : ""
-      reply = fromBlocks || fromMd
-      // If only a check was returned, give a short neutral lead-in (check renders separately)
-      if (!reply && blocks.some((b) => b.type === "understanding_check")) {
+      if (outcome.mode === "markers") {
+        reply = outcome.reply
+        evaluation = outcome.evaluationText ? parseEvaluation(parseJson(outcome.evaluationText)) : null
+        const st = outcome.stateText
+          ? parseJson<{ statePatch?: Partial<LearningState>; check?: unknown }>(outcome.stateText)
+          : null
+        statePatch = st?.statePatch
+        if (st?.check && typeof st.check === "object") {
+          blocks = parseLessonBlocks([{ ...(st.check as object), type: "understanding_check" }])
+        }
+      } else if (outcome.mode === "json") {
+        // Older JSON-style answer
+        const parsed = parseJson<{
+          replyMarkdown?: unknown
+          statePatch?: Partial<LearningState>
+          blocks?: unknown
+          evaluation?: unknown
+        }>(outcome.raw)
+        if (!parsed) {
+          console.error("Tutor structured parse failed; suppressing raw output")
+          logTutorMetric({
+            action: metricAction,
+            durationMs: Date.now() - t0,
+            ok: false,
+            failureCategory: "validation",
+            validationFailed: true,
+          })
+          throw new Error(friendlyTutorFailure())
+        }
+        blocks = parseLessonBlocks(parsed.blocks)
+        evaluation = parseEvaluation(parsed.evaluation)
+        const fromBlocks = blocksToMarkdown(blocks)
+        const fromMd = typeof parsed.replyMarkdown === "string" ? parsed.replyMarkdown.trim() : ""
+        reply = fromBlocks || fromMd
+        statePatch = parsed.statePatch
+        parseOk = false
+      } else {
+        // Plain teaching text
+        reply = outcome.reply
+        parseOk = false
+      }
+
+      if (!reply.trim() && blocks.some((b) => b.type === "understanding_check")) {
         reply = "Your turn — try the check below."
       }
-      if (learningState) {
-        learningState = mergeLearningState(learningState, parsed.statePatch)
+
+      let nextState = learningStateAtStart
+      if (nextState) {
+        nextState = mergeLearningState(nextState, statePatch)
         if (evaluation) {
           const mapped =
             evaluation.result === "correct"
@@ -458,10 +491,8 @@ export async function POST(req: NextRequest) {
               : evaluation.result === "partially_correct"
                 ? "partial"
                 : "incorrect"
-          learningState = mergeLearningState(learningState, {
-            recentPerformance: [
-              { questionId: evaluation.questionId || "check", result: mapped },
-            ],
+          nextState = mergeLearningState(nextState, {
+            recentPerformance: [{ questionId: evaluation.questionId || "check", result: mapped }],
             nextRecommendedAction:
               evaluation.recommendedAction === "explain_differently"
                 ? "explain_differently"
@@ -474,145 +505,213 @@ export async function POST(req: NextRequest) {
           })
         }
       }
-    } else if (!looksLikeStructuredPayload(modelText)) {
-      // Genuine plain-text teaching reply
-      reply = modelText.trim()
-      parseOk = true
-    } else {
-      // Still looks like JSON / internal payload — do not show it
-      console.error("Tutor structured parse failed; suppressing raw output")
+
+      // The verdict card shows "Correct!" etc. at the top, so the text must not repeat it
+      if (evaluation) reply = stripLeadingVerdict(reply)
+
+      if (!reply.trim()) {
+        reply =
+          evaluation?.feedback ||
+          "Let me know what part you want to go over, or pick an option below if there is a check."
+      }
+
+      // Final safety: never leak JSON-looking strings
+      if (looksLikeStructuredPayload(reply)) {
+        console.error("Tutor reply still looked structured after normalize")
+        throw new Error(friendlyTutorFailure())
+      }
+
+      // Track the open question for the next submit_answer (answer key is stored encrypted)
+      const checkBlock = blocks.find((b) => b.type === "understanding_check")
+      const nextLastQuestion =
+        checkBlock && checkBlock.type === "understanding_check"
+          ? {
+              questionId: checkBlock.questionId,
+              expectedAnswer: checkBlock.expectedAnswer || null,
+              prompt: checkBlock.prompt,
+              // Saved so the question can be shown again when the student reopens the topic
+              answerType: checkBlock.answerType,
+              options: checkBlock.options ?? null,
+            }
+          : action === "submit_answer"
+            ? null
+            : incomingLastQuestion
+      const savedLastQuestion = nextLastQuestion
+        ? {
+            ...nextLastQuestion,
+            expectedAnswer: sealSecret(
+              typeof nextLastQuestion.expectedAnswer === "string" ? nextLastQuestion.expectedAnswer : null
+            ),
+          }
+        : null
+
+      // Persist session (soft-fail)
+      if (finalSessionId && nextState) {
+        const { error: upErr } = await supabase
+          .from("tutor_sessions")
+          .update({
+            topic: topicStr,
+            preferred_level: teachingLevel,
+            current_level: nextState.currentLevel,
+            current_stage: nextState.currentStage,
+            state: nextState,
+            last_question: savedLastQuestion,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", finalSessionId)
+          .eq("user_id", userIdForSave)
+        if (upErr) console.warn("tutor_sessions update:", upErr.message)
+      }
+
+      // Save chat messages (existing table)
+      if (materialIdStr) {
+        const rows = [
+          {
+            user_id: userIdForSave,
+            material_id: materialIdStr,
+            topic: topicStr,
+            role: "user" as const,
+            content: textMessage.slice(0, 8000),
+          },
+          {
+            user_id: userIdForSave,
+            material_id: materialIdStr,
+            topic: topicStr,
+            role: "assistant" as const,
+            // The verdict card is not stored, so keep the verdict as the first line when the chat is reopened
+            content: (evaluation
+              ? `**${verdictLabel(evaluation.result)}.** ${evaluation.feedback}\n\n${reply}`
+              : reply
+            ).slice(0, 16000),
+          },
+        ]
+        const { error: saveError } = await supabase.from("tutor_messages").insert(rows)
+        if (saveError) console.error("tutor_messages save:", saveError.message)
+      }
+
+      void logAiUsage(supabase, {
+        feature: "tutor",
+        model,
+        inputTokens: started.usage.inputTokens,
+        outputTokens: started.usage.outputTokens,
+        durationMs: Date.now() - t0,
+        ok: true,
+      })
+
       logTutorMetric({
         action: metricAction,
+        level: teachingLevel,
         durationMs: Date.now() - t0,
-        ok: false,
-        failureCategory: "validation",
-        validationFailed: true,
+        ok: true,
+        retrievedChunks: retrievalCount,
+        hadBlocks: blocks.length > 0,
+        hadEvaluation: Boolean(evaluation),
+        validationFailed: !parseOk,
       })
-      return NextResponse.json(
-        {
-          error: friendlyTutorFailure(),
-          retryable: true,
-          sessionId,
-        },
-        { status: 422 }
-      )
+
+      return {
+        reply,
+        model,
+        level: teachingLevel,
+        sessionId: finalSessionId,
+        retrievedChunks: retrievalCount,
+        state: nextState
+          ? {
+              currentStage: nextState.currentStage,
+              preferredLevel: nextState.preferredLevel,
+              currentLevel: nextState.currentLevel,
+              nextRecommendedAction: nextState.nextRecommendedAction,
+              understoodConcepts: nextState.understoodConcepts.slice(-8),
+              strugglingConcepts: nextState.strugglingConcepts.slice(-8),
+            }
+          : null,
+        lesson: blocks.length ? { topicTitle: topicStr, blocks: publicBlocks(blocks) } : null,
+        evaluation,
+      }
     }
 
-    // The verdict card shows "Correct!" etc. at the top, so the text must not repeat it
-    if (evaluation) reply = stripLeadingVerdict(reply)
-
-    if (!reply.trim()) {
-      reply =
-        evaluation?.feedback ||
-        "Let me know what part you want to go over, or pick an option below if there is a check."
-    }
-
-    // Final safety: never leak JSON-looking strings
-    if (looksLikeStructuredPayload(reply)) {
-      console.error("Tutor reply still looked structured after normalize")
-      return NextResponse.json(
-        { error: friendlyTutorFailure(), retryable: true, sessionId },
-        { status: 422 }
-      )
-    }
-
-    // Track last check for next submit_answer
-    const checkBlock = blocks.find((b) => b.type === "understanding_check")
-    const nextLastQuestion =
-      checkBlock && checkBlock.type === "understanding_check"
-        ? {
-            questionId: checkBlock.questionId,
-            expectedAnswer: checkBlock.expectedAnswer || null,
-            prompt: checkBlock.prompt,
-            // Saved so the question can be shown again when the student reopens the topic
-            answerType: checkBlock.answerType,
-            options: checkBlock.options ?? null,
+    // ---- Send the answer to the phone as it is written ----
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        let closed = false
+        const send = (event: string, data: unknown) => {
+          if (closed) return
+          try {
+            controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+          } catch {
+            closed = true // the student left; we still finish and save the lesson turn
           }
-        : action === "submit_answer"
-          ? null
-          : lastQuestion
+        }
+        let sentEvaluation = false
+        try {
+          const parser = new TutorStreamParser({
+            onContent: (text, full) => send("content", { text, full }),
+            onEvaluationText: (json) => {
+              const ev = json ? parseEvaluation(parseJson(json)) : null
+              if (ev) {
+                sentEvaluation = true
+                send("evaluation", ev)
+              }
+            },
+          })
+          for await (const piece of startedChunks) parser.feed(piece)
 
-    // Persist session (soft-fail)
-    if (sessionId && learningState) {
-      const { error: upErr } = await supabase
-        .from("tutor_sessions")
-        .update({
-          topic: topicStr,
-          preferred_level: teachingLevel,
-          current_level: learningState.currentLevel,
-          current_stage: learningState.currentStage,
-          state: learningState,
-          last_question: nextLastQuestion,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", sessionId)
-        .eq("user_id", user.id)
-      if (upErr) console.warn("tutor_sessions update:", upErr.message)
-    }
-
-    // Save chat messages (existing table)
-    if (materialIdStr) {
-      const rows = [
-        {
-          user_id: user.id,
-          material_id: materialIdStr,
-          topic: topicStr,
-          role: "user" as const,
-          content: textMessage.slice(0, 8000),
-        },
-        {
-          user_id: user.id,
-          material_id: materialIdStr,
-          topic: topicStr,
-          role: "assistant" as const,
-          // The verdict card is not stored, so keep the verdict as the first line when the chat is reopened
-          content: (evaluation
-            ? `**${verdictLabel(evaluation.result)}.** ${evaluation.feedback}\n\n${reply}`
-            : reply
-          ).slice(0, 16000),
-        },
-      ]
-      const { error: saveError } = await supabase.from("tutor_messages").insert(rows)
-      if (saveError) console.error("tutor_messages save:", saveError.message)
-    }
-
-    logTutorMetric({
-      action: metricAction,
-      level: teachingLevel,
-      durationMs: Date.now() - t0,
-      ok: true,
-      retrievedChunks: retrievalCount,
-      hadBlocks: blocks.length > 0,
-      hadEvaluation: Boolean(evaluation),
-      validationFailed: !parseOk,
+          const payload = await finalizeTurn(parser.finish())
+          if (payload.evaluation && !sentEvaluation) send("evaluation", payload.evaluation)
+          if (payload.lesson) send("lesson", payload.lesson)
+          if (payload.state) send("state", payload.state)
+          send("done", payload)
+        } catch (err) {
+          const cancelled = abort.signal.aborted
+          console.error("Tutor stream error:", cancelled ? "cancelled by student" : err)
+          logTutorMetric({
+            action: metricAction,
+            durationMs: Date.now() - t0,
+            ok: false,
+            failureCategory: cancelled ? "cancelled" : "exception",
+          })
+          // A failed or cancelled answer is logged as not-ok and saves nothing, so nothing is duplicated
+          void logAiUsage(supabase, {
+            feature: "tutor",
+            model,
+            inputTokens: started.usage.inputTokens,
+            outputTokens: started.usage.outputTokens,
+            durationMs: Date.now() - t0,
+            ok: false,
+            errorCategory: cancelled ? "cancelled" : "stream_error",
+          })
+          const message =
+            err instanceof Error && err.message === friendlyTutorFailure()
+              ? err.message
+              : "The answer was cut off. Please try again."
+          send("error", { message })
+        } finally {
+          await releaseSlot()
+          try {
+            controller.close()
+          } catch {
+            // already closed
+          }
+        }
+      },
+      cancel() {
+        // The student closed the page or lost signal: stop the AI call
+        abort.abort()
+      },
     })
 
-    return NextResponse.json({
-      reply,
-      model: result.model,
-      level: teachingLevel,
-      sessionId,
-      retrievedChunks: retrievalCount,
-      state: learningState
-        ? {
-            currentStage: learningState.currentStage,
-            preferredLevel: learningState.preferredLevel,
-            currentLevel: learningState.currentLevel,
-            nextRecommendedAction: learningState.nextRecommendedAction,
-            understoodConcepts: learningState.understoodConcepts.slice(-8),
-            strugglingConcepts: learningState.strugglingConcepts.slice(-8),
-          }
-        : null,
-      lesson: blocks.length
-        ? {
-            topicTitle: topicStr,
-            blocks: publicBlocks(blocks),
-          }
-        : null,
-      evaluation,
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      },
     })
   } catch (err) {
     console.error(err)
+    await slot?.release()
     logTutorMetric({
       action: metricAction,
       durationMs: Date.now() - t0,
