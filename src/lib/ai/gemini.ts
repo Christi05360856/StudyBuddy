@@ -250,9 +250,35 @@ export function parseJson<T>(text: string): T | null {
 // Streaming: the answer arrives piece by piece, so the student starts reading at once.
 // ---------------------------------------------------------------------------
 
+export type StreamUsage = { inputTokens?: number; outputTokens?: number }
+
 export type GeminiStreamResult =
-  | { ok: true; model: string; chunks: AsyncGenerator<string, void, undefined> }
+  | {
+      ok: true
+      model: string
+      chunks: AsyncGenerator<string, void, undefined>
+      /** Filled in while the answer streams (when the provider reports it) */
+      usage: StreamUsage
+    }
   | { ok: false; error: string }
+
+function captureUsage(ev: string, usage: StreamUsage): void {
+  const data = ev
+    .split("\n")
+    .filter((l) => l.startsWith("data:"))
+    .map((l) => l.slice(5).trim())
+    .join("")
+  if (!data || data === "[DONE]") return
+  try {
+    const meta = JSON.parse(data)?.usageMetadata
+    if (meta) {
+      if (typeof meta.promptTokenCount === "number") usage.inputTokens = meta.promptTokenCount
+      if (typeof meta.candidatesTokenCount === "number") usage.outputTokens = meta.candidatesTokenCount
+    }
+  } catch {
+    // not JSON
+  }
+}
 
 function textFromEvent(ev: string): string {
   const data = ev
@@ -282,21 +308,36 @@ export async function streamGemini(options: {
   maxOutputTokens?: number
   timeoutMs?: number
   systemInstruction?: string
+  /** Aborts everything when the student leaves or cancels */
+  signal?: AbortSignal
 }): Promise<GeminiStreamResult> {
   const apiKey = process.env.GEMINI_API_KEY
   const errors: string[] = []
-  const deadline = Date.now() + (options.timeoutMs ?? 40000)
+  const startedAt = Date.now()
+  const deadline = startedAt + (options.timeoutMs ?? 40000)
+  const usage: StreamUsage = {}
   let sawQuota = false
+  // With a backup provider configured, do not spend more than ~20s on Gemini before switching
+  const geminiBudgetEnd = process.env.FALLBACK_LLM_API_KEY
+    ? Math.min(deadline, startedAt + 20000)
+    : deadline
 
+  if (options.signal?.aborted) return { ok: false, error: "cancelled" }
   if (apiKey) {
     for (const model of modelList()) {
-      const remaining = deadline - Date.now()
+      const remaining = geminiBudgetEnd - Date.now()
       if (remaining < 3000) break
 
-      // One timer covers the whole answer, including the part still being streamed
+      // First piece must arrive quickly (10s), otherwise try the next model.
+      // After that, one timer covers the rest of the answer.
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), remaining)
-      const stop = () => clearTimeout(timer)
+      const onCancel = () => controller.abort()
+      options.signal?.addEventListener("abort", onCancel, { once: true })
+      let timer = setTimeout(() => controller.abort(), Math.min(remaining, 10000))
+      const stop = () => {
+        clearTimeout(timer)
+        options.signal?.removeEventListener("abort", onCancel)
+      }
 
       try {
         const res = await fetch(
@@ -345,6 +386,7 @@ export async function streamGemini(options: {
           const events = buffer.split("\n\n")
           buffer = events.pop() ?? ""
           for (const ev of events) {
+            captureUsage(ev, usage)
             const text = textFromEvent(ev)
             if (text) firstTexts.push(text)
           }
@@ -354,6 +396,10 @@ export async function streamGemini(options: {
           stop()
           continue
         }
+
+        // First piece arrived: switch to the timer for the rest of the answer
+        clearTimeout(timer)
+        timer = setTimeout(() => controller.abort(), Math.max(1000, deadline - Date.now()))
 
         // Hand the rest of the stream over, starting with what is already read
         async function* continued(): AsyncGenerator<string, void, undefined> {
@@ -367,17 +413,19 @@ export async function streamGemini(options: {
               const events = carry.split("\n\n")
               carry = events.pop() ?? ""
               for (const ev of events) {
+                captureUsage(ev, usage)
                 const text = textFromEvent(ev)
                 if (text) yield text
               }
             }
+            captureUsage(carry, usage)
             const tail = textFromEvent(carry)
             if (tail) yield tail
           } finally {
             stop()
           }
         }
-        return { ok: true, model, chunks: continued() }
+        return { ok: true, model, chunks: continued(), usage }
       } catch (err) {
         stop()
         const message =
@@ -391,6 +439,8 @@ export async function streamGemini(options: {
   } else {
     errors.push("GEMINI_API_KEY not set")
   }
+
+  if (options.signal?.aborted) return { ok: false, error: "cancelled" }
 
   // Backup provider answers in one piece
   const fallback = await callFallback({
@@ -406,7 +456,7 @@ export async function streamGemini(options: {
     async function* single(): AsyncGenerator<string, void, undefined> {
       yield text
     }
-    return { ok: true, model, chunks: single() }
+    return { ok: true, model, chunks: single(), usage }
   }
   if (fallback && !fallback.ok) errors.push(fallback.error)
 
