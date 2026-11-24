@@ -297,6 +297,36 @@ const COMPOSER_MAX_PX = 160
 // The server rejects anything longer
 const MAX_MESSAGE_CHARS = 4000
 
+const LESSON_LEVELS: LessonLevel[] = ["very_simple", "standard", "advanced", "exam_ready"]
+
+/** Rebuilds the open question from what the server saved, or null when there is none. */
+function restoreCheck(raw: unknown): Message["check"] {
+  if (!raw || typeof raw !== "object") return null
+  const q = raw as {
+    questionId?: unknown
+    prompt?: unknown
+    answerType?: unknown
+    options?: unknown
+  }
+  if (typeof q.questionId !== "string" || typeof q.prompt !== "string" || !q.prompt) return null
+  const options = Array.isArray(q.options)
+    ? q.options
+        .map((o) => {
+          const item = o as { id?: unknown; text?: unknown }
+          return typeof item?.id === "string" && typeof item?.text === "string"
+            ? { id: item.id, text: item.text }
+            : null
+        })
+        .filter((o): o is { id: string; text: string } => o !== null)
+    : []
+  if (q.answerType === "short_text") {
+    return { questionId: q.questionId, prompt: q.prompt, answerType: "short_text" }
+  }
+  // Questions saved before options were stored cannot be shown again
+  if (options.length === 0) return null
+  return { questionId: q.questionId, prompt: q.prompt, answerType: "single_choice", options }
+}
+
 /** Undo a turn that failed: drop the unfinished tutor bubble and the student's own bubble. */
 function rollbackTurn(prev: Message[], userText: string | null): Message[] {
   const next = [...prev]
@@ -467,7 +497,8 @@ function TutorContent() {
     load()
   }, [materialId])
 
-  const applyTutorData = (data: Record<string, unknown>) => {
+  // keepPending: a side question (hint, recap, follow-up) must not make an unanswered check disappear
+  const applyTutorData = (data: Record<string, unknown>, keepPending = false) => {
     if (typeof data.sessionId === "string" && data.sessionId) setSessionId(data.sessionId)
     const replyText = String(data.reply || "")
     if (looksLikeJson(replyText)) {
@@ -475,7 +506,8 @@ function TutorContent() {
         "I had trouble with that reply. Please try again — your notes are still here."
       )
     }
-    const check = extractCheck(data as Parameters<typeof extractCheck>[0])
+    const check =
+      extractCheck(data as Parameters<typeof extractCheck>[0]) ?? (keepPending ? pendingCheck : null)
     setPendingCheck(check)
     const st = stageFrom(data as { state?: { currentStage?: string } | null })
     if (st) setLessonStage(st)
@@ -510,6 +542,10 @@ function TutorContent() {
     setActiveTopic(topic)
     setPhase("chat")
     setMessages([])
+    setSessionId(null)
+    setPendingCheck(null)
+    setLessonStage(null)
+    setSendError(null)
     setLoading(true)
     setThinkingMode("start_lesson")
 
@@ -520,12 +556,14 @@ function TutorContent() {
           .select("role, content, created_at")
           .eq("material_id", materialId)
           .eq("topic", topic)
-          .order("created_at", { ascending: true })
-          .limit(40)
+          .order("created_at", { ascending: false })
+          .limit(60)
 
         if (saved && saved.length > 0) {
+          // newest 60 messages, shown oldest first
+          const ordered = [...saved].reverse()
           setMessages(
-            saved.map((m) => {
+            ordered.map((m) => {
               const content =
                 m.role === "assistant" && looksLikeJson(m.content)
                   ? "Previous reply could not be shown. Ask me to continue from here."
@@ -539,7 +577,7 @@ function TutorContent() {
           )
           const { data: sess } = await supabase
             .from("tutor_sessions")
-            .select("id, current_stage")
+            .select("id, current_stage, last_question, preferred_level")
             .eq("material_id", materialId)
             .eq("topic", topic)
             .order("updated_at", { ascending: false })
@@ -548,6 +586,20 @@ function TutorContent() {
           if (sess?.id) {
             setSessionId(sess.id)
             if (sess.current_stage) setLessonStage(String(sess.current_stage))
+            const savedLevel = String(sess.preferred_level || "") as LessonLevel
+            if (LESSON_LEVELS.includes(savedLevel)) setLevel(savedLevel)
+
+            // Bring back the question the student had not answered yet
+            const restored = restoreCheck(sess.last_question)
+            const lastSaved = ordered[ordered.length - 1]
+            if (restored && lastSaved?.role === "assistant") {
+              setPendingCheck(restored)
+              setMessages((prev) => {
+                const last = prev[prev.length - 1]
+                if (!last || last.role !== "assistant") return prev
+                return [...prev.slice(0, -1), { ...last, check: restored }]
+              })
+            }
           }
           setLoading(false)
           return
@@ -619,6 +671,15 @@ function TutorContent() {
     const text = (preset ?? input).trim()
     if (!text || loading) return
 
+    // A typed answer to an open "type your answer" question is checked as an answer
+    if (preset === undefined && pendingCheck?.answerType === "short_text" && !checkBusy) {
+      if (text.length <= MAX_MESSAGE_CHARS) {
+        setInput("")
+        void submitCheckAnswer(pendingCheck.questionId, text, true)
+        return
+      }
+    }
+
     if (text.length > MAX_MESSAGE_CHARS) {
       setSendError(`That message is too long (max ${MAX_MESSAGE_CHARS} characters). Please shorten it.`)
       return
@@ -659,7 +720,7 @@ function TutorContent() {
         })
       })
       if (!ok) throw new Error(String(data.error || "Failed"))
-      applyTutorData(data)
+      applyTutorData(data, true)
     } catch (err) {
       // Put the student's text back in the box (even if they started typing something else)
       setInput((prev) => (prev.trim() ? `${text}\n${prev}` : text))
@@ -711,7 +772,7 @@ function TutorContent() {
         })
       })
       if (!ok) throw new Error(String(data.error || "Failed"))
-      applyTutorData(data)
+      applyTutorData(data, true)
     } catch (err) {
       setMessages((prev) => rollbackTurn(prev, trimmed))
       setSendError((err instanceof Error && err.message) || "Something went wrong. Please try again.")
@@ -720,7 +781,7 @@ function TutorContent() {
     }
   }
 
-  const submitCheckAnswer = async (questionId: string, text: string) => {
+  const submitCheckAnswer = async (questionId: string, text: string, fromComposer = false) => {
     if (!text.trim() || checkBusy || loading) return
     setCheckBusy(true)
     setSendError(null)
@@ -778,6 +839,8 @@ function TutorContent() {
         )
       )
       setPendingCheck(checkSnapshot)
+      // A typed answer goes back into the box so nothing is lost
+      if (fromComposer) setInput((prev) => (prev.trim() ? `${text.trim()}\n${prev}` : text.trim()))
       setSendError(
         (err instanceof Error && err.message) || "Could not check that answer. Please try again."
       )
