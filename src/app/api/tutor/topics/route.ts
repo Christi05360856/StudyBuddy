@@ -2,11 +2,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { callGemini, parseJson } from "@/lib/ai/gemini"
 import { createClient } from "@/lib/supabase/server"
-import {
-  AI_LIMITS,
-  limitReachedMessage,
-  providerBusyMessage,
-} from "@/lib/ai/limits"
+import { checkAiCredit, rateLimit, providerBusyMessage } from "@/lib/ai/limits"
 
 export async function POST(req: NextRequest) {
   try {
@@ -18,22 +14,29 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Please log in again." }, { status: 401 })
     }
 
-    // Fail-open on limit errors so topics still work
-    const { data: allowed, error: creditError } = await supabase.rpc("consume_ai_credit", {
-      feature: "topics",
-      daily_limit: AI_LIMITS.topics,
-    })
-    if (creditError) {
-      console.error("consume_ai_credit error:", creditError)
-    } else if (allowed === false) {
-      return NextResponse.json(
-        { topics: [], error: limitReachedMessage("topics") },
-        { status: 429 }
-      )
+    // Validate first, so a bad request never costs a credit
+    const body = await req.json().catch(() => null)
+    if (!body || typeof body !== "object") {
+      return NextResponse.json({ topics: [], error: "Invalid request." }, { status: 400 })
+    }
+    const { materialTitle: rawTitle, context } = body as { materialTitle?: unknown; context?: unknown }
+    const materialTitle = typeof rawTitle === "string" ? rawTitle.trim().slice(0, 200) : ""
+    const notes = typeof context === "string" ? context.slice(0, 8000) : ""
+    if (!materialTitle && !notes) {
+      return NextResponse.json({ topics: [], error: "Material title or notes required." }, { status: 400 })
     }
 
-    const { materialTitle, context } = await req.json()
-    const notes = typeof context === "string" ? context.slice(0, 8000) : ""
+    const burst = rateLimit(`topics:${user.id}`, 6, 60_000)
+    if (!burst.ok) {
+      return NextResponse.json(
+        { topics: [], error: `Please wait ${burst.retryAfterSec} seconds and try again.` },
+        { status: 429, headers: { "Retry-After": String(burst.retryAfterSec) } }
+      )
+    }
+    const credit = await checkAiCredit(supabase, "topics")
+    if (!credit.ok) {
+      return NextResponse.json({ topics: [], error: credit.message }, { status: credit.status })
+    }
 
     const prompt = `You are helping a Nigerian university/polytechnic student study.
 
