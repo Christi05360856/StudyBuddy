@@ -226,7 +226,8 @@ function extractCheck(data: {
 
 async function readTutorResponse(
   res: Response,
-  onPartial?: (full: string) => void
+  onPartial?: (full: string) => void,
+  onEvaluation?: (evaluation: Record<string, unknown>) => void
 ): Promise<{ ok: boolean; status: number; data: Record<string, unknown> }> {
   const ctype = res.headers.get("content-type") || ""
   if (ctype.includes("text/event-stream") && res.body) {
@@ -234,6 +235,7 @@ async function readTutorResponse(
     const decoder = new TextDecoder()
     let buffer = ""
     let full = ""
+    let sawDone = false
     const data: Record<string, unknown> = { reply: "" }
     while (true) {
       const { done, value } = await reader.read()
@@ -256,10 +258,15 @@ async function readTutorResponse(
             full = String(parsed.full || full + String(parsed.text || ""))
             data.reply = full
             onPartial?.(full)
-          } else if (event === "evaluation") data.evaluation = parsed
-          else if (event === "lesson") data.lesson = parsed
+          } else if (event === "evaluation") {
+            data.evaluation = parsed
+            onEvaluation?.(parsed)
+          } else if (event === "lesson") data.lesson = parsed
           else if (event === "state") data.state = parsed
-          else if (event === "done") Object.assign(data, parsed)
+          else if (event === "done") {
+            Object.assign(data, parsed)
+            sawDone = true
+          }
           else if (event === "error") {
             return { ok: false, status: 422, data: { error: String(parsed.message || "Failed") } }
           }
@@ -267,6 +274,10 @@ async function readTutorResponse(
           /* ignore */
         }
       }
+    }
+    // A stream that stops before "done" was cut off (signal lost, server stopped): never treat it as a finished answer
+    if (!sawDone) {
+      return { ok: false, status: 502, data: { error: "The answer was cut off. Please try again." } }
     }
     return { ok: true, status: 200, data }
   }
@@ -387,7 +398,8 @@ function TutorContent() {
     if (!el) return
     const composerH = composerRef.current?.offsetHeight ?? 120
     el.style.scrollMarginBottom = `${composerH + 16}px`
-    el.scrollIntoView({ behavior: "smooth", block: "end" })
+    // while an answer is streaming in, jump (smooth scrolling would lag behind every new line)
+    el.scrollIntoView({ behavior: loading ? "auto" : "smooth", block: "end" })
   }, [messages, loading])
 
   // Phones have no Shift+Enter, so on touch screens Enter makes a new line and the Send button sends
@@ -496,6 +508,17 @@ function TutorContent() {
 
     load()
   }, [materialId])
+
+  // Updates the tutor message that is being written (text and verdict card appear as they stream in)
+  const patchLastAssistant = (patch: Partial<Message>) => {
+    setMessages((prev) => {
+      const last = prev.length - 1
+      if (last < 0 || prev[last].role !== "assistant") return prev
+      const copy = [...prev]
+      copy[last] = { ...copy[last], ...patch }
+      return copy
+    })
+  }
 
   // keepPending: a side question (hint, recap, follow-up) must not make an unanswered check disappear
   const applyTutorData = (data: Record<string, unknown>, keepPending = false) => {
@@ -622,9 +645,14 @@ function TutorContent() {
           topic,
         }),
       })
-      const { ok, data } = await readTutorResponse(res, (full) => {
-        setMessages([{ role: "assistant", content: full }])
-      })
+      const { ok, data } = await readTutorResponse(
+        res,
+        (full) => setMessages([{ role: "assistant", content: full, createdAt: Date.now() }]),
+        (ev) =>
+          setMessages((prev) => [
+            { role: "assistant", content: prev[0]?.content ?? "", createdAt: prev[0]?.createdAt ?? Date.now(), evaluation: ev as unknown as Message["evaluation"] },
+          ])
+      )
       if (!ok || !data.reply) {
         throw new Error(String(data.error || "No reply from the AI."))
       }
@@ -709,16 +737,11 @@ function TutorContent() {
           topic: activeTopic || "general",
         }),
       })
-      const { ok, data } = await readTutorResponse(res, (full) => {
-        setMessages((prev) => {
-          const copy = [...prev]
-          const last = copy.length - 1
-          if (last >= 0 && copy[last].role === "assistant") {
-            copy[last] = { ...copy[last], content: full }
-          }
-          return copy
-        })
-      })
+      const { ok, data } = await readTutorResponse(
+        res,
+        (full) => patchLastAssistant({ content: full }),
+        (ev) => patchLastAssistant({ evaluation: ev as unknown as Message["evaluation"] })
+      )
       if (!ok) throw new Error(String(data.error || "Failed"))
       applyTutorData(data, true)
     } catch (err) {
@@ -761,16 +784,11 @@ function TutorContent() {
           topic: activeTopic || "general",
         }),
       })
-      const { ok, data } = await readTutorResponse(res, (full) => {
-        setMessages((prev) => {
-          const copy = [...prev]
-          const last = copy.length - 1
-          if (last >= 0 && copy[last].role === "assistant") {
-            copy[last] = { ...copy[last], content: full }
-          }
-          return copy
-        })
-      })
+      const { ok, data } = await readTutorResponse(
+        res,
+        (full) => patchLastAssistant({ content: full }),
+        (ev) => patchLastAssistant({ evaluation: ev as unknown as Message["evaluation"] })
+      )
       if (!ok) throw new Error(String(data.error || "Failed"))
       applyTutorData(data, true)
     } catch (err) {
@@ -817,16 +835,11 @@ function TutorContent() {
           topic: activeTopic || "general",
         }),
       })
-      const { ok, data } = await readTutorResponse(res, (full) => {
-        setMessages((prev) => {
-          const copy = [...prev]
-          const last = copy.length - 1
-          if (last >= 0 && copy[last].role === "assistant") {
-            copy[last] = { ...copy[last], content: full }
-          }
-          return copy
-        })
-      })
+      const { ok, data } = await readTutorResponse(
+        res,
+        (full) => patchLastAssistant({ content: full }),
+        (ev) => patchLastAssistant({ evaluation: ev as unknown as Message["evaluation"] })
+      )
       if (!ok) throw new Error(String(data.error || "Failed"))
       applyTutorData(data)
     } catch (err) {
@@ -1024,7 +1037,9 @@ function TutorContent() {
                 {m.role === "assistant" && m.evaluation && (
                   <EvaluationCard evaluation={m.evaluation} />
                 )}
-                <TutorBubble role={m.role} content={m.content} at={m.createdAt} />
+                {!(m.role === "assistant" && (m.content === "…" || m.content === "")) && (
+                  <TutorBubble role={m.role} content={m.content} at={m.createdAt} />
+                )}
                 {m.role === "assistant" &&
                   m.check &&
                   (m.checkLocked || (i === messages.length - 1 && pendingCheck)) && (
@@ -1038,7 +1053,12 @@ function TutorContent() {
                   )}
               </div>
             )})}
-            {loading && <TutorThinking mode={thinkingMode} />}
+            {loading &&
+              (() => {
+                const last = messages[messages.length - 1]
+                const writing = last?.role === "assistant" && last.content !== "…" && last.content !== ""
+                return writing ? null : <TutorThinking mode={thinkingMode} />
+              })()}
             <div ref={bottomRef} />
           </div>
 
