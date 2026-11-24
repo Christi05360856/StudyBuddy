@@ -38,6 +38,31 @@ function looksLikeStructuredPayload(text: string): boolean {
   return false
 }
 
+const VERDICT_WORD =
+  "(?:that(?:'s| is)\\s+)?(?:correct|right|incorrect|wrong|exactly|well done|great job|good job|not quite|partly correct|partially correct|almost)(?:\\s+answer)?"
+const VERDICT_ONLY_LINE = new RegExp(
+  `^\\s*(?:#{1,6}\\s*)?(?:\\*\\*|__)?\\s*${VERDICT_WORD}\\s*[!.:✅❌✓✔]*\\s*(?:\\*\\*|__)?\\s*$`,
+  "i"
+)
+
+/** Drops a leading line that only says "Correct!" etc. — the verdict card already says it. */
+function stripLeadingVerdict(markdown: string): string {
+  const lines = markdown.replace(/\r/g, "").split("\n")
+  let i = 0
+  while (i < lines.length && lines[i].trim() === "") i++
+  if (i < lines.length && VERDICT_ONLY_LINE.test(lines[i])) {
+    const rest = lines.slice(i + 1).join("\n").trim()
+    if (rest) return rest
+  }
+  return markdown
+}
+
+function verdictLabel(result: string): string {
+  if (result === "correct") return "Correct"
+  if (result === "partially_correct") return "Partly correct"
+  return "Incorrect"
+}
+
 function friendlyTutorFailure(): string {
   return "I had trouble putting that lesson together. Please tap retry — your notes and topic are still here."
 }
@@ -92,6 +117,7 @@ Do not reveal the correct option in the visible content. Put the correct option 
     case "submit_answer":
       return `ACTION: submit_answer
 Evaluate the student's answer. Fill "evaluation" with result (correct | partially_correct | incorrect), specific feedback, and recommendedAction.
+The evaluation is shown to the student as a verdict card ABOVE your blocks, so do NOT repeat the verdict in the blocks: no block titled "Correct!" / "Incorrect" / "Not quite", and no opening line that only says right or wrong. Start the blocks directly with the next teaching step.
 Then continue teaching in blocks based on that result (adapt: re-explain differently if wrong, deepen if correct).
 If appropriate, include a new understanding_check.`
     case "request_hint":
@@ -469,6 +495,9 @@ export async function POST(req: NextRequest) {
       )
     }
 
+    // The verdict card shows "Correct!" etc. at the top, so the text must not repeat it
+    if (evaluation) reply = stripLeadingVerdict(reply)
+
     if (!reply.trim()) {
       reply =
         evaluation?.feedback ||
@@ -530,7 +559,11 @@ export async function POST(req: NextRequest) {
           material_id: materialIdStr,
           topic: topicStr,
           role: "assistant" as const,
-          content: reply.slice(0, 16000),
+          // The verdict card is not stored, so keep the verdict as the first line when the chat is reopened
+          content: (evaluation
+            ? `**${verdictLabel(evaluation.result)}.** ${evaluation.feedback}\n\n${reply}`
+            : reply
+          ).slice(0, 16000),
         },
       ]
       const { error: saveError } = await supabase.from("tutor_messages").insert(rows)
